@@ -17,11 +17,12 @@ function persistSharedCollection(collection, records) {
 }
 
 async function loadSharedData() {
-  const stateSources = ['/api/state', './data/crm-state.json'];
+  const stateSources = ['./data/crm-state.json', '/api/state'];
   for (const source of stateSources) {
     try {
       const response = await fetch(source, { cache: 'no-store' });
       if (!response.ok) throw new Error(`Shared state request failed: ${response.status}`);
+      if (!response.headers.get('content-type')?.includes('application/json')) continue;
       const data = await response.json();
       if (!Array.isArray(data.suppliers) && !Array.isArray(data.bookings)) throw new Error('Invalid shared state payload');
       if (Array.isArray(data.suppliers)) sharedData.suppliers = data.suppliers;
@@ -32,7 +33,7 @@ async function loadSharedData() {
       } catch {}
       break;
     } catch (error) {
-      console.warn(`Shared CRM state source unavailable: ${source}`, error);
+      if (source !== '/api/state') console.warn(`Shared CRM state source unavailable: ${source}`, error);
     }
   }
   render();
@@ -209,6 +210,7 @@ function persistLeadForm(form) {
   const index = leads.findIndex(item => item.id === originalId);
   if (index >= 0) leads[index] = {...leads[index], ...lead}; else leads.push(lead);
   localStorage.setItem('milas-leads', JSON.stringify(leads));
+  syncLeadToCustomer(lead);
 }
 function handleLeadSubmit(event) {
   event.preventDefault();
@@ -1200,7 +1202,7 @@ function phoneValueParts(value, fallback = '+60') {
   return { code, local: compact.replace(new RegExp('^' + code.replace('+', '')), '') };
 }
 function phoneCountryOptions(selected = '+60') {
-  return Object.entries(countryDialCodes).map(([code, dial]) => `<option value="${dial}" ${dial === selected ? 'selected' : ''}>${escapeMarkup(countryNames.of(code) || code)} ${dial}</option>`).join('');
+  return Object.entries(countryDialCodes).map(([, dial]) => `<option value="${dial}" ${dial === selected ? 'selected' : ''}>${escapeMarkup(dial)}</option>`).join('');
 }
 function phoneFieldMarkup(fieldName, label, value = '', required = false) {
   const parts = phoneValueParts(value);
@@ -1226,6 +1228,24 @@ function customerFromRecord(record, existing = {}) {
     nationality: existing.nationality || record.nationality || '',
   };
 }
+function syncLeadToCustomer(lead) {
+  const fullName = String(lead.customer || '').trim();
+  if (!fullName) return;
+  const customers = storedCustomers();
+  const normalise = value => String(value || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const email = normalise(lead.email), phone = normalise(lead.phone);
+  const existing = customers.find(customer => customer.sourceLeadId === lead.id)
+    || customers.find(customer => (email && normalise(customer.email) === email) || (phone && normalise(customer.phone) === phone))
+    || customers.find(customer => normalise(customer.fullName) === normalise(fullName));
+  const now = new Date().toISOString();
+  const customer = {...customerFromRecord(lead, existing || {}), sourceLeadId: lead.id, updatedAt: now};
+  if (existing) {
+    Object.assign(existing, customer);
+  } else {
+    customers.unshift({...customer, id: nextCustomerId(customers), createdAt: now});
+  }
+  localStorage.setItem('milas-customers', JSON.stringify(customers));
+}
 function storedCustomers() {
   try {
     const saved = JSON.parse(localStorage.getItem('milas-customers') || 'null');
@@ -1249,6 +1269,9 @@ function storedCustomers() {
   localStorage.setItem('milas-customers', JSON.stringify(customers));
   return customers;
 }
+function syncStoredLeadsToCustomers() {
+  storedLeads().filter(lead => String(lead.customer || '').trim()).forEach(syncLeadToCustomer);
+}
 function customerMetrics(customer) {
   const name = String(customer.fullName || '').trim().toLowerCase();
   const bookings = storedBookings().filter(record => String(record.customer || '').trim().toLowerCase() === name);
@@ -1257,6 +1280,7 @@ function customerMetrics(customer) {
   return { bookings: bookings.length, balance };
 }
 function customerView() {
+  syncStoredLeadsToCustomers();
   const customers = storedCustomers();
   return `<article class="panel list-panel customers-list"><div class="toolbar"><div class="search-field">⌕ <input placeholder="Search customers..." /></div><button class="ghost-btn" data-action="filter">Filter</button></div><div class="table-wrap"><table><thead><tr><th>Customer ID</th><th>Customer</th><th>Phone number</th><th>Email</th><th>Nationality</th><th>Bookings</th><th>Outstanding</th><th></th></tr></thead><tbody>${customers.length ? customers.map(customer => { const metrics = customerMetrics(customer); return `<tr><td class="id-cell">${escapeMarkup(customer.id)}</td><td><strong>${escapeMarkup(customer.fullName || '—')}</strong><small class="table-subtext">${escapeMarkup(customer.company || '')}</small></td><td>${escapeMarkup(customer.phone || '—')}</td><td>${escapeMarkup(customer.email || '—')}</td><td>${escapeMarkup(customer.nationality || '—')}</td><td>${metrics.bookings}</td><td>RM ${metrics.balance.toFixed(2)}</td><td><button class="ghost-btn customer-open" data-open-customer="${encodeURIComponent(JSON.stringify(customer))}">Open</button></td></tr>`; }).join('') : '<tr><td colspan="8" class="empty-cell">Tiada customer. Tekan + New Customer untuk menambah rekod.</td></tr>'}</tbody></table></div></article>`;
 }
@@ -1276,7 +1300,7 @@ function customerEditor(record = {}) {
   const storedPhone = String(customer.phone || '');
   const storedCode = customer.phoneCountryCode || Object.values(countryDialCodes).sort((a, b) => b.length - a.length).find(code => storedPhone.replace(/[^+0-9]/g, '').startsWith(code)) || '+60';
   const localPhone = storedPhone.replace(/[^0-9]/g, '').replace(new RegExp('^' + storedCode.replace('+', '')), '');
-  const phoneField = `<label>Phone number<div class="phone-input-group"><select name="phoneCountryCode" aria-label="Country calling code">${Object.entries(countryDialCodes).map(([code, dial]) => `<option value="${dial}" ${dial === storedCode ? 'selected' : ''}>${escapeMarkup(countryNames.of(code) || code)} ${dial}</option>`).join('')}</select><input name="phone" type="tel" value="${escapeMarkup(localPhone)}" placeholder="12-345 6789" pattern="[0-9][0-9\\s().-]{5,17}" title="Masukkan nombor telefon tanpa kod negara" required /></div></label>`;
+  const phoneField = `<label>Phone number<div class="phone-input-group"><select name="phoneCountryCode" aria-label="Country calling code">${Object.entries(countryDialCodes).map(([, dial]) => `<option value="${dial}" ${dial === storedCode ? 'selected' : ''}>${escapeMarkup(dial)}</option>`).join('')}</select><input name="phone" type="tel" value="${escapeMarkup(localPhone)}" placeholder="12-345 6789" pattern="[0-9][0-9\\s().-]{5,17}" title="Masukkan nombor telefon tanpa kod negara" required /></div></label>`;
   const input = ([key, label, type, required]) => key === 'nationality' ? `<label>${label}<select name="${key}">${countryOptions(customer[key] || '')}</select></label>` : key === 'phone' ? phoneField : key === 'emergencyPhone' ? phoneFieldMarkup('emergencyPhone', label, customer.emergencyPhone) : `<label>${label}<input name="${key}" type="${type}" value="${escapeMarkup(customer[key] || '')}" ${required ? 'required' : ''} /></label>`;
   return `<div class="modal-backdrop" id="customerModal"><form class="booking-modal customer-modal" id="customerForm"><div class="modal-head"><div><span class="eyebrow">CRM / Customers</span><h2>${record.id ? 'Edit customer' : 'New customer'}</h2><p>Simpan profil lengkap customer untuk kegunaan quotation, invoice dan booking.</p></div><button type="button" class="modal-close" data-close-customer>×</button></div><div class="customer-form-content"><div class="send-section-title">CUSTOMER PROFILE</div><div class="editor-grid"><label>Customer ID<input name="id" value="${escapeMarkup(customer.id)}" readonly /></label>${customerFields.slice(0, 6).map(input).join('')}</div><div class="send-section-title">IDENTITY & CONTACT DETAILS</div><div class="editor-grid">${customerFields.slice(6).map(input).join('')}</div><label class="full-width">Notes<textarea name="notes" rows="4">${escapeMarkup(customer.notes || '')}</textarea></label></div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-customer>Cancel</button><button type="submit" class="primary-btn">Save customer</button></div></form></div>`;
 }
@@ -2039,7 +2063,7 @@ function saveFormFieldConfigs(configs) {
 }
 function formFieldConfig(formId) {
   const configs = formFieldConfigs();
-  return configs[formId] || {hidden: [], custom: []};
+  return configs[formId] || {hidden: [], custom: [], order: []};
 }
 function formFieldRecord(form) {
   const identifiers = ['id', 'orderId', 'productId', 'supplierId'];
@@ -2061,6 +2085,17 @@ function formFieldLabel(label) {
   copy.querySelectorAll('input,select,textarea,details,button').forEach(node => node.remove());
   return copy.textContent.trim().replace(/\s+/g, ' ') || 'Custom field';
 }
+function applyFormFieldOrder(form, order = []) {
+  const grid = form?.querySelector('.editor-grid');
+  if (!grid || !Array.isArray(order) || !order.length) return;
+  const labels = [...grid.querySelectorAll(':scope > label')];
+  const byKey = new Map(labels.map(label => [label.querySelector('[name]')?.name, label]));
+  const orderedKeys = [...order, ...labels.map(label => label.querySelector('[name]')?.name)]
+    .filter((key, index, keys) => key && keys.indexOf(key) === index);
+  const currentKeys = labels.map(label => label.querySelector('[name]')?.name);
+  if (currentKeys.length === orderedKeys.length && currentKeys.every((key, index) => key === orderedKeys[index])) return;
+  orderedKeys.forEach(key => { const label = byKey.get(key); if (label) grid.appendChild(label); });
+}
 function enhanceFormFields(form) {
   // Payment records use a fixed finance form; field customization is only for
   // editable CRM forms and should not appear in the payment workflow.
@@ -2078,6 +2113,7 @@ function enhanceFormFields(form) {
       : `<input name="${escapeMarkup(field.key)}" type="${escapeMarkup(field.type || 'text')}" value="${escapedValue}" />`;
     grid.insertAdjacentHTML('beforeend', `<label data-custom-field="${escapeMarkup(field.key)}">${escapeMarkup(field.label)}${control}</label>`);
   });
+  applyFormFieldOrder(form, config.order);
   form.querySelectorAll('label').forEach(label => {
     const control = label.querySelector('[name]');
     if (!control) return;
@@ -2087,12 +2123,15 @@ function enhanceFormFields(form) {
   });
   const legacyButton = form.querySelector('[data-customize-fields]');
   if (legacyButton) { legacyButton.removeAttribute('data-customize-fields'); legacyButton.setAttribute('data-customize-form', ''); }
+  form.querySelectorAll('[data-customize-fields], [data-customize-form]').forEach(button => { if (button.textContent !== '⚙ Setting') button.textContent = '⚙ Setting'; });
   if (!form.querySelector('[data-customize-form]')) {
     const header = form.querySelector('.modal-head');
     if (header) {
       const actions = header.querySelector('.modal-head-actions') || header.appendChild(document.createElement('div'));
       actions.classList.add('modal-head-actions');
-      actions.insertAdjacentHTML('afterbegin', '<button type="button" class="view-control" data-customize-form>⚙ Susun field</button>');
+      actions.insertAdjacentHTML('afterbegin', '<button type="button" class="view-control" data-customize-form>⚙ Setting</button>');
+      const closeButton = header.querySelector('.modal-close');
+      if (closeButton && closeButton.parentElement !== actions) actions.appendChild(closeButton);
     }
   }
 }
@@ -2102,7 +2141,7 @@ function formFieldManager(form) {
     const control = label.querySelector('[name]');
     return control ? {key: control.name, label: formFieldLabel(label), custom: Boolean(label.dataset.customField)} : null;
   }).filter(Boolean).filter((field, index, all) => all.findIndex(item => item.key === field.key) === index);
-  return `<div class="modal-backdrop" id="formFieldManager" data-form-id="${escapeMarkup(form.id)}"><section class="field-manager"><div class="modal-head"><div><span class="eyebrow">Form settings</span><h2>Susun field</h2><p>Tambah, sembunyi atau padam field untuk borang ini.</p></div><button type="button" class="modal-close" data-close-form-field-manager>×</button></div><div class="field-manager-list">${fields.map(field => `<div class="field-manager-row"><strong>${escapeMarkup(field.label)}</strong><small>${escapeMarkup(field.key)}</small><label class="field-toggle"><input type="checkbox" data-form-field-visible="${escapeMarkup(field.key)}" ${config.hidden.includes(field.key) ? '' : 'checked'} /> <span>${field.custom ? 'Show' : 'Show'}</span></label>${field.custom ? `<button type="button" class="field-move" data-delete-form-field="${escapeMarkup(field.key)}">Delete</button>` : ''}</div>`).join('')}</div><div class="add-field-row"><input data-form-field-label placeholder="Nama field baharu" /><select data-form-field-type><option value="text">Text</option><option value="number">Number</option><option value="date">Date</option><option value="textarea">Notes / Textarea</option></select><button type="button" class="ghost-btn" data-add-form-field>＋ Add field</button></div><div class="modal-actions"><button type="button" class="primary-btn" data-close-form-field-manager>Done</button></div></section></div>`;
+  return `<div class="modal-backdrop" id="formFieldManager" data-form-id="${escapeMarkup(form.id)}"><section class="field-manager"><div class="modal-head"><div><span class="eyebrow">Form settings</span><h2>Setting</h2><p>Tarik field atau gunakan anak panah untuk ubah susunan.</p></div><button type="button" class="modal-close" data-close-form-field-manager>×</button></div><div class="field-manager-list">${fields.map((field, index) => `<div class="field-manager-row" draggable="true" data-form-field-row data-field-key="${escapeMarkup(field.key)}"><span class="drag-handle" title="Tarik untuk susun">☷</span><strong>${escapeMarkup(field.label)}</strong><small>${escapeMarkup(field.key)}</small><label class="field-toggle"><input type="checkbox" data-form-field-visible="${escapeMarkup(field.key)}" ${config.hidden.includes(field.key) ? '' : 'checked'} /> <span>Show</span></label><button type="button" class="field-move" data-form-field-move="up" ${index === 0 ? 'disabled' : ''} aria-label="Move ${escapeMarkup(field.label)} up">↑</button><button type="button" class="field-move" data-form-field-move="down" ${index === fields.length - 1 ? 'disabled' : ''} aria-label="Move ${escapeMarkup(field.label)} down">↓</button>${field.custom ? `<button type="button" class="field-move" data-delete-form-field="${escapeMarkup(field.key)}">Delete</button>` : ''}</div>`).join('')}</div><div class="add-field-row"><input data-form-field-label placeholder="Nama field baharu" /><select data-form-field-type><option value="text">Text</option><option value="number">Number</option><option value="date">Date</option><option value="textarea">Notes / Textarea</option></select><button type="button" class="ghost-btn" data-add-form-field>＋ Add field</button></div><div class="modal-actions"><button type="button" class="primary-btn" data-close-form-field-manager>Done</button></div></section></div>`;
 }
 function refreshFormFieldManager(formId) {
   const form = document.getElementById(formId);
@@ -2117,6 +2156,19 @@ document.addEventListener('click', event => {
     return;
   }
   if (event.target.closest('[data-close-form-field-manager]')) { document.querySelector('#formFieldManager')?.remove(); return; }
+  const move = event.target.closest('[data-form-field-move]');
+  if (move) {
+    const manager = move.closest('#formFieldManager'), formId = manager?.dataset.formId;
+    const rows = [...(manager?.querySelectorAll('[data-form-field-row]') || [])];
+    const row = move.closest('[data-form-field-row]'), index = rows.indexOf(row);
+    const next = move.dataset.formFieldMove === 'up' ? index - 1 : index + 1;
+    if (!formId || index < 0 || next < 0 || next >= rows.length) return;
+    const order = rows.map(item => item.dataset.fieldKey);
+    [order[index], order[next]] = [order[next], order[index]];
+    const configs = formFieldConfigs(), config = configs[formId] || {hidden: [], custom: []};
+    config.order = order; configs[formId] = config; saveFormFieldConfigs(configs);
+    enhanceFormFields(document.getElementById(formId)); refreshFormFieldManager(formId); return;
+  }
   const add = event.target.closest('[data-add-form-field]');
   if (add) {
     const manager = add.closest('#formFieldManager'), formId = manager?.dataset.formId, label = manager?.querySelector('[data-form-field-label]')?.value.trim();
@@ -2132,9 +2184,42 @@ document.addEventListener('click', event => {
   if (remove) {
     const manager = remove.closest('#formFieldManager'), formId = manager?.dataset.formId, key = remove.dataset.deleteFormField;
     const configs = formFieldConfigs(), config = configs[formId] || {hidden: [], custom: []};
-    config.custom = config.custom.filter(field => field.key !== key); config.hidden = config.hidden.filter(field => field !== key);
+    config.custom = config.custom.filter(field => field.key !== key); config.hidden = config.hidden.filter(field => field !== key); config.order = (config.order || []).filter(item => item !== key);
     configs[formId] = config; saveFormFieldConfigs(configs); refreshFormFieldManager(formId);
   }
+});
+document.addEventListener('dragstart', event => {
+  const row = event.target.closest('[data-form-field-row]');
+  if (!row) return;
+  row.classList.add('is-dragging');
+  event.dataTransfer?.setData('text/plain', row.dataset.fieldKey);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+});
+document.addEventListener('dragover', event => {
+  const row = event.target.closest('[data-form-field-row]');
+  if (!row) return;
+  event.preventDefault();
+  document.querySelectorAll('[data-form-field-row].drag-target').forEach(item => item.classList.remove('drag-target'));
+  row.classList.add('drag-target');
+});
+document.addEventListener('drop', event => {
+  const target = event.target.closest('[data-form-field-row]'), manager = target?.closest('#formFieldManager');
+  if (!target || !manager) return;
+  event.preventDefault();
+  const sourceKey = event.dataTransfer?.getData('text/plain'), rows = [...manager.querySelectorAll('[data-form-field-row]')];
+  const source = rows.find(row => row.dataset.fieldKey === sourceKey);
+  if (!source || source === target) return;
+  const order = rows.map(row => row.dataset.fieldKey), sourceIndex = order.indexOf(sourceKey), targetIndex = order.indexOf(target.dataset.fieldKey);
+  order.splice(sourceIndex, 1);
+  const insertionIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex;
+  order.splice(insertionIndex, 0, sourceKey);
+  const formId = manager.dataset.formId, configs = formFieldConfigs(), config = configs[formId] || {hidden: [], custom: []};
+  config.order = order; configs[formId] = config; saveFormFieldConfigs(configs);
+  enhanceFormFields(document.getElementById(formId)); refreshFormFieldManager(formId);
+});
+document.addEventListener('dragend', event => {
+  event.target.closest('[data-form-field-row]')?.classList.remove('is-dragging');
+  document.querySelectorAll('[data-form-field-row].drag-target').forEach(item => item.classList.remove('drag-target'));
 });
 document.addEventListener('change', event => {
   const visible = event.target.closest('[data-form-field-visible]');
@@ -2144,6 +2229,13 @@ document.addEventListener('change', event => {
   config.hidden = visible.checked ? config.hidden.filter(item => item !== key) : [...new Set([...config.hidden, key])];
   configs[formId] = config; saveFormFieldConfigs(configs); enhanceFormFields(document.getElementById(formId));
 });
-const formFieldObserver = new MutationObserver(() => document.querySelectorAll('form.booking-modal').forEach(enhanceFormFields));
+const formFieldObserver = new MutationObserver(() => {
+  formFieldObserver.disconnect();
+  try {
+    document.querySelectorAll('form.booking-modal').forEach(enhanceFormFields);
+  } finally {
+    formFieldObserver.observe(document.body, {childList: true, subtree: true});
+  }
+});
 formFieldObserver.observe(document.body, {childList: true, subtree: true});
 document.querySelectorAll('form.booking-modal').forEach(enhanceFormFields);
