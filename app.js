@@ -7,14 +7,23 @@ function persistSharedCollection(collection, records) {
 }
 
 async function loadSharedData() {
-  try {
-    const response = await fetch('/api/state', { cache: 'no-store' });
-    if (!response.ok) throw new Error(`Shared state request failed: ${response.status}`);
-    const data = await response.json();
-    if (Array.isArray(data.suppliers)) sharedData.suppliers = data.suppliers;
-    if (Array.isArray(data.bookings)) sharedData.bookings = data.bookings;
-  } catch (error) {
-    console.warn('Shared CRM state unavailable; using browser fallback.', error);
+  const stateSources = ['/api/state', './data/crm-state.json'];
+  for (const source of stateSources) {
+    try {
+      const response = await fetch(source, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`Shared state request failed: ${response.status}`);
+      const data = await response.json();
+      if (!Array.isArray(data.suppliers) && !Array.isArray(data.bookings)) throw new Error('Invalid shared state payload');
+      if (Array.isArray(data.suppliers)) sharedData.suppliers = data.suppliers;
+      if (Array.isArray(data.bookings)) sharedData.bookings = data.bookings;
+      try {
+        if (Array.isArray(sharedData.suppliers)) localStorage.setItem('milas-suppliers', JSON.stringify(sharedData.suppliers));
+        if (Array.isArray(sharedData.bookings)) localStorage.setItem('milas-bookings', JSON.stringify(sharedData.bookings));
+      } catch {}
+      break;
+    } catch (error) {
+      console.warn(`Shared CRM state source unavailable: ${source}`, error);
+    }
   }
   render();
 }
@@ -22,7 +31,7 @@ async function loadSharedData() {
 const navGroups = [
   { label: 'Workspace', items: [['dashboard','Dashboard','▦']] },
   { label: 'CRM', items: [['leads','Leads','◌'],['customers','Customers','◎'],['pipeline','Sales Pipeline','⌁'],['followups','Follow-ups','◷']] },
-  { label: 'Sales', items: [['quotations','Quotations','▤']] },
+  { label: 'Sales', items: [['quotations','Quotations','▤'],['invoices','Invoices','▧']] },
   { label: 'Bookings', items: [['bookings','All Bookings','▣'],['upcoming','Upcoming Travel','◫']] },
   { label: 'Catalogue', items: [['products','Tour Packages','◇']] },
   { label: 'Finance & Ops', items: [['payments','Payment Records','₿'],['outstanding','Outstanding Payments','!'],['operations','Operations','⌂'],['suppliers','Suppliers','⬡'],['reports','Reports','⌘']] },
@@ -36,6 +45,7 @@ const views = {
   pipeline: { eyebrow: 'CRM / Sales Pipeline', title: 'Sales Pipeline', subtitle: 'Lihat pergerakan lead dari pertanyaan ke confirmed booking.', action: '+ New Lead' },
   followups: { eyebrow: 'CRM / Follow-ups', title: 'Follow-ups', subtitle: 'Jangan lepaskan panggilan, WhatsApp atau tindakan susulan.', action: '+ New Follow-up' },
   quotations: { eyebrow: 'Sales', title: 'Quotations', subtitle: 'Quotation berkongsi customer dan pricing engine yang sama.', action: '+ New Quotation' },
+  invoices: { eyebrow: 'Sales', title: 'Invoices', subtitle: 'Invoice dijana secara automatik daripada quotation yang telah ditukar.', action: '' },
   bookings: { eyebrow: 'Bookings', title: 'All Bookings', subtitle: 'Sumber kebenaran tunggal untuk semua tempahan Milas Travel.', action: '+ New Booking' },
   calendar: { eyebrow: 'Bookings', title: 'Booking Calendar', subtitle: 'Rancang kapasiti perjalanan mengikut tarikh.', action: 'Today' },
   upcoming: { eyebrow: 'Bookings', title: 'Upcoming Travel', subtitle: 'Perjalanan akan datang yang memerlukan persediaan.', action: '' },
@@ -169,6 +179,89 @@ function storedQuotations() {
     return Array.isArray(saved) ? saved : moduleData.quotations.rows.map(([id, customer, packageName, travelDate, total, status]) => ({id, customer, phone: '', email: '', packageName, travelDate, total, status}));
   } catch { return []; }
 }
+function quotationDocumentSnapshot(quotation) {
+  const packageName = quotation.packageName || '';
+  const product = storedTourProducts().find(item => item.productId === quotation.packageId || item.name === packageName || (packageName && String(packageName).includes(item.name))) || {};
+  return JSON.parse(JSON.stringify({
+    ...quotation,
+    documentProduct: product,
+    documentPricing: quotationPricing(quotation.packageId)
+  }));
+}
+function storedInvoices() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('milas-invoices') || 'null');
+    if (!Array.isArray(saved)) return [];
+    let updated = false;
+    const invoices = saved.map(invoice => {
+      if (invoice.quotationSnapshot) return invoice;
+      const quotation = storedQuotations().find(item => item.id === invoice.quotationId);
+      updated = true;
+      return {...invoice, quotationSnapshot: quotationDocumentSnapshot({...quotation, ...invoice, id: invoice.quotationId})};
+    });
+    if (updated) localStorage.setItem('milas-invoices', JSON.stringify(invoices));
+    return invoices;
+  } catch { return []; }
+}
+function nextInvoiceNumber(invoices) {
+  const sequence = invoices.map(invoice => Number(String(invoice.id || '').match(/(\d+)$/)?.[1])).filter(Number.isFinite);
+  return `INV-${String(Math.max(0, ...sequence) + 1).padStart(6, '0')}`;
+}
+function convertQuotationToInvoice(quotation) {
+  const invoices = storedInvoices();
+  const existing = invoices.find(invoice => invoice.quotationId === quotation.id);
+  if (existing) return existing;
+  const invoice = {...quotation, id: nextInvoiceNumber(invoices), quotationId: quotation.id, status: 'Draft', issuedAt: new Date().toISOString(), quotationSnapshot: quotationDocumentSnapshot(quotation)};
+  invoices.unshift(invoice);
+  localStorage.setItem('milas-invoices', JSON.stringify(invoices));
+  const quotations = storedQuotations();
+  const index = quotations.findIndex(item => item.id === quotation.id);
+  if (index >= 0) {
+    quotations[index] = {...quotations[index], invoiceId: invoice.id};
+    localStorage.setItem('milas-quotations', JSON.stringify(quotations));
+  }
+  return invoice;
+}
+// Company payment details shared by invoice preview and PDF.
+const invoiceBankDetails = Object.freeze({
+  bankName: 'PUBLIC BANK',
+  accountName: 'Milas Travel & Tours Sdn Bhd',
+  accountNumber: '3239149436'
+});
+
+function invoicePdfMarkup({data, bankDetails = invoiceBankDetails}) {
+  const snapshot = data.quotationSnapshot || storedInvoices().find(invoice => invoice.id === data.id)?.quotationSnapshot || quotationDocumentSnapshot(data);
+  return quotationPdfMarkup({
+    data: {...snapshot, id: data.id},
+    packageName: snapshot.packageName || '',
+    total: snapshot.total || '0',
+    documentType: 'INVOICE',
+    documentDate: data.issuedAt,
+    quotationReference: data.quotationId,
+    bankDetails
+  });
+}
+function invoicePreview(data) {
+  const previewDocument = invoicePdfMarkup({data}).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  const printable = encodeURIComponent(JSON.stringify({data}));
+  return `<div class="modal-backdrop" id="invoicePreviewModal"><article class="booking-modal quotation-preview"><div class="modal-head"><div><span class="eyebrow">Invoice preview</span><h2>${data.id || 'Invoice'}</h2><p>Invoice draft berjaya dijana daripada quotation.</p></div><button type="button" class="modal-close" data-close-invoice-preview>×</button></div><iframe class="quotation-a4-frame" title="A4 invoice preview" srcdoc="${previewDocument}"></iframe><div class="modal-actions"><button type="button" class="ghost-btn" data-close-invoice-preview>Back</button><button type="button" class="primary-btn" data-print-invoice="${printable}">Save as PDF</button></div></article></div>`;
+}
+function addQuotationInvoiceButtons() {
+  document.querySelectorAll('[data-whatsapp-quotation]').forEach(whatsappButton => {
+    if (whatsappButton.parentElement.querySelector('[data-convert-invoice]')) return;
+    const openButton = whatsappButton.parentElement.querySelector('[data-open-quotation]');
+    if (!openButton) return;
+    const button = document.createElement('button');
+    button.className = 'invoice-btn';
+    button.type = 'button';
+    button.dataset.convertInvoice = openButton.dataset.openQuotation;
+    button.title = 'Tukar quotation kepada invoice';
+    button.textContent = 'Convert to invoice';
+    whatsappButton.parentElement.appendChild(button);
+  });
+}
+const quotationActionObserver = new MutationObserver(addQuotationInvoiceButtons);
+quotationActionObserver.observe(document.body, {childList: true, subtree: true});
 function nextQuotationNumber(quotations) {
   const sequence = quotations.map(quotation => Number(String(quotation.id || '').match(/(\d+)$/)?.[1])).filter(Number.isFinite);
   return `QT-${localDateKey().replaceAll('-', '').slice(2)}-${String(Math.max(0, ...sequence) + 1).padStart(3, '0')}`;
@@ -198,7 +291,11 @@ function updateQuotationTotal(form) {
 }
 function quotationsView() {
   const quotations = storedQuotations();
-  return `<article class="panel list-panel quotations-list"><div class="toolbar"><div class="search-field">⌕ <input placeholder="Search quotations..." /></div><button class="ghost-btn">Filter</button></div><div class="table-wrap"><table><thead><tr><th>Quotation</th><th>Customer</th><th>Phone number</th><th>Email</th><th>Package</th><th>Travel date</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody>${quotations.length ? quotations.map(quotation => `<tr><td class="id-cell">${quotation.id}</td><td><strong>${quotation.customer || '—'}</strong></td><td>${quotation.phone || '—'}</td><td>${quotation.email || '—'}</td><td>${quotation.packageName || '—'}</td><td>${formatTravelDate(quotation.travelDate)}</td><td>${quotation.total || '—'}</td><td><span class="status ${String(quotation.status || '').toLowerCase().replaceAll(' ','-')}">${quotation.status || 'Draft'}</span></td><td><button class="ghost-btn quotation-open" data-open-quotation="${encodeURIComponent(JSON.stringify(quotation))}">Open</button></td></tr>`).join('') : '<tr><td colspan="9" class="empty-cell">Tiada quotation.</td></tr>'}</tbody></table></div></article>`;
+  return `<article class="panel list-panel quotations-list"><div class="toolbar"><div class="search-field">⌕ <input placeholder="Search quotations..." /></div><button class="ghost-btn">Filter</button></div><div class="table-wrap"><table><thead><tr><th>Quotation</th><th>Customer</th><th>Phone number</th><th>Email</th><th>Package</th><th>Travel date</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody>${quotations.length ? quotations.map(quotation => { const printable = encodeURIComponent(JSON.stringify({data: quotation, packageName: quotation.packageName || '', total: quotation.total || '0'})); const whatsapp = encodeURIComponent(JSON.stringify({phone: quotation.phone || '', customer: quotation.customer || '', quotationId: quotation.id || ''})); const phone = String(quotation.phone || '').replace(/[^0-9]/g, ''); return `<tr><td class="id-cell">${quotation.id}</td><td><strong>${quotation.customer || '—'}</strong></td><td>${quotation.phone || '—'}</td><td>${quotation.email || '—'}</td><td>${quotation.packageName || '—'}</td><td>${formatTravelDate(quotation.travelDate)}</td><td>${quotation.total || '—'}</td><td><span class="status ${String(quotation.status || '').toLowerCase().replaceAll(' ','-')}">${quotation.status || 'Draft'}</span></td><td><div class="quotation-row-actions"><button class="ghost-btn quotation-open" data-open-quotation="${encodeURIComponent(JSON.stringify(quotation))}">Open</button><button class="primary-btn quotation-pdf" data-print-quotation="${printable}">Save as PDF</button><button class="whatsapp-btn" data-whatsapp-quotation="${whatsapp}" aria-label="WhatsApp ${quotation.customer || 'client'}" title="Hubungi client melalui WhatsApp" ${phone ? '' : 'disabled'}><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2a9.8 9.8 0 0 0-8.5 14.7L2 22l5.5-1.4A10 10 0 1 0 12 2Zm0 2a8 8 0 0 1 6.9 12l-.5.8.7 2.6-2.7-.7-.8.5A8 8 0 1 1 12 4Zm-3.2 3.9c-.2 0-.5.1-.7.4-.2.3-.8.8-.8 2s.8 2.3.9 2.5c.1.2 1.6 2.6 4 3.5 2 .8 2.4.6 2.8.6.4-.1 1.3-.5 1.5-1 .2-.5.2-.9.1-1-.1-.1-.3-.2-.6-.3l-1.5-.7c-.2-.1-.4-.1-.6.1l-.6.8c-.2.2-.3.2-.6.1-.3-.1-1.1-.4-1.8-1.1-.7-.6-1.1-1.4-1.2-1.7-.1-.3 0-.4.1-.6l.4-.5c.2-.2.2-.4.1-.6l-.7-1.7c-.2-.5-.4-.5-.6-.5h-.2Z"/></svg></button></div></td></tr>`; }).join('') : '<tr><td colspan="9" class="empty-cell">Tiada quotation.</td></tr>'}</tbody></table></div></article>`;
+}
+function invoicesView() {
+  const invoices = storedInvoices();
+  return `<article class="panel list-panel invoices-list"><div class="toolbar"><div class="search-field">⌕ <input placeholder="Search invoices..." /></div><button class="ghost-btn">Filter</button></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Quotation</th><th>Customer</th><th>Package</th><th>Travel date</th><th>Issued</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody>${invoices.length ? invoices.map(invoice => { const payload = encodeURIComponent(JSON.stringify({data: invoice})); return `<tr><td class="id-cell">${invoice.id || '—'}</td><td>${invoice.quotationId || '—'}</td><td><strong>${invoice.customer || '—'}</strong><small class="table-subtext">${invoice.email || invoice.phone || ''}</small></td><td>${invoice.packageName || '—'}</td><td>${formatTravelDate(invoice.travelDate)}</td><td>${invoice.issuedAt ? new Intl.DateTimeFormat('en-GB').format(new Date(invoice.issuedAt)) : '—'}</td><td>RM ${Number(String(invoice.total || '0').replace(/[^0-9.-]/g, '') || 0).toFixed(2)}</td><td><span class="status draft">${invoice.status || 'Draft'}</span></td><td><div class="quotation-row-actions"><button class="ghost-btn" data-open-invoice="${payload}">Open</button><button class="primary-btn quotation-pdf" data-print-invoice="${payload}">Save as PDF</button></div></td></tr>`; }).join('') : '<tr><td colspan="9" class="empty-cell">Belum ada invoice. Convert quotation untuk menjana invoice secara automatik.</td></tr>'}</tbody></table></div></article>`;
 }
 const quotationStatuses = ['Draft', 'Sent', 'Accepted', 'Rejected'];
 function quotationEditor(record = {}) {
@@ -211,28 +308,38 @@ function quotationEditor(record = {}) {
   return `<div class="modal-backdrop" id="quotationModal"><form class="booking-modal quotation-modal" id="quotationForm" onsubmit="return handleQuotationSubmit(event)"><div class="modal-head"><div><span class="eyebrow">Sales / Quotations</span><h2>${record.id ? 'Edit quotation' : 'New quotation'}</h2><p>Lengkapkan dan simpan quotation customer.</p></div><button type="button" class="modal-close" data-close-quotation>×</button></div><div class="editor-grid">${input('id','Quotation number')}${input('leadId','Lead ID')}${input('customer','Customer name')}${input('phone','Phone number','tel')}${input('email','Email','email')}<label class="full-width">Package<select name="packageId" data-quotation-package>${products.length ? products.map(product => `<option value="${product.productId}" ${product.productId === packageId ? 'selected' : ''}>${product.productId} — ${product.name || 'Unnamed package'}</option>`).join('') : '<option value="">Tiada package dalam database</option>'}</select></label>${input('travelDate','Travel date','date')}<label>No of adults<input name="adults" type="number" min="0" step="1" value="${quotation.adults || 0}" data-quotation-calculator /></label><label>No of children<input name="children" type="number" min="0" step="1" value="${quotation.children || 0}" data-quotation-calculator /></label><label>No of infants<input name="infants" type="number" min="0" step="1" value="${quotation.infants || 0}" data-quotation-calculator /></label><label>Single supplement<input name="singleSupplement" type="number" min="0" step="1" value="${quotation.singleSupplement || 0}" data-quotation-calculator /></label><label>Discount (%)<input name="discount" type="number" min="0" max="100" step="0.01" value="${quotation.discount || 0}" data-quotation-calculator /></label><label>Total<input name="total" type="text" value="${quotation.total || '0.00'}" data-quotation-total readonly /></label><label>Status<select name="status">${quotationStatuses.map(status => `<option ${quotation.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></label><label class="full-width">Notes<textarea name="notes" rows="4">${quotation.notes || ''}</textarea></label></div><div class="modal-actions"><button type="button" class="ghost-btn" data-preview-quotation>Preview quotation</button><button type="submit" class="primary-btn">Save</button></div></form></div>`;
 }
 function quotationPreview(data, packageName, total) {
-  const printable = encodeURIComponent(JSON.stringify({data, packageName, total}));
   const previewDocument = quotationPdfMarkup({data, packageName, total}).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-  return `<div class="modal-backdrop" id="quotationPreviewModal"><article class="booking-modal quotation-preview"><div class="modal-head"><div><span class="eyebrow">Quotation preview</span><h2>${data.id || 'New quotation'}</h2><p>Format A4 sebelum quotation disimpan.</p></div><button type="button" class="modal-close" data-close-quotation-preview>×</button></div><iframe class="quotation-a4-frame" title="A4 quotation preview" srcdoc="${previewDocument}"></iframe><div class="modal-actions"><button type="button" class="ghost-btn" data-share-quotation="${printable}">Share</button><button type="button" class="ghost-btn" data-print-quotation="${printable}">Save as PDF</button><button type="button" class="primary-btn" data-close-quotation-preview>Back to quotation</button></div></article></div>`;
+  return `<div class="modal-backdrop" id="quotationPreviewModal"><article class="booking-modal quotation-preview"><div class="modal-head"><div><span class="eyebrow">Quotation preview</span><h2>${data.id || 'New quotation'}</h2><p>Format A4 sebelum quotation disimpan.</p></div><button type="button" class="modal-close" data-close-quotation-preview>×</button></div><iframe class="quotation-a4-frame" title="A4 quotation preview" srcdoc="${previewDocument}"></iframe><div class="modal-actions"><button type="button" class="ghost-btn" data-close-quotation-preview>Back</button></div></article></div>`;
 }
-function quotationPdfMarkup({data, packageName, total}) {
-  const product = storedTourProducts().find(item => item.productId === data.packageId || item.name === packageName || (packageName && String(packageName).includes(item.name))) || {};
+function quotationPdfMarkup({data, packageName, total, documentType = 'QUOTATION', documentDate, quotationReference, bankDetails}) {
+  const escapeDocumentText = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+  total = Number(String(total || '0').replace(/[^0-9.-]/g, '')) || 0;
+  const product = data.documentProduct || storedTourProducts().find(item => item.productId === data.packageId || item.name === packageName || (packageName && String(packageName).includes(item.name))) || {};
   const bulletItems = value => String(value || '').split(/\r?\n/).map(item => item.trim().replace(/^(?:[•*-]|\d+[.)])\s*/, '')).filter(Boolean);
   const includedItems = bulletItems(product.included ?? product.whatsIncluded ?? product.whatIncluded ?? product.inclusions);
   const excludedItems = bulletItems(product.excluded ?? product.whatsExcluded ?? product.whatExcluded ?? product.exclusions);
   const packageNotes = [
-    includedItems.length ? `<div class="package-note"><strong>What's included</strong><ul>${includedItems.map(item => `<li>${item}</li>`).join('')}</ul></div>` : '',
-    excludedItems.length ? `<div class="package-note"><strong>What's excluded</strong><ul>${excludedItems.map(item => `<li>${item}</li>`).join('')}</ul></div>` : '',
+    includedItems.length ? `<div class="package-note"><strong>What's included</strong><ul>${includedItems.map(item => `<li>${escapeDocumentText(item)}</li>`).join('')}</ul></div>` : '',
+    excludedItems.length ? `<div class="package-note"><strong>What's excluded</strong><ul>${excludedItems.map(item => `<li>${escapeDocumentText(item)}</li>`).join('')}</ul></div>` : '',
   ].join('');
-  const pricing = quotationPricing(data.packageId);
+  const pricing = data.documentPricing || quotationPricing(data.packageId);
   const line = (label, count, unit) => {
     const quantity = Number(count || 0);
     if (quantity <= 0) return '';
     return `<tr><td>${label}</td><td>${quantity}</td><td>RM ${Number(unit || 0).toFixed(2)}</td><td>RM ${(quantity * Number(unit || 0)).toFixed(2)}</td></tr>`;
   };
-  const subtotal = quotationTotal({querySelector: selector => ({'[data-quotation-package]': {value: data.packageId}, '[name="adults"]': {value: data.adults}, '[name="children"]': {value: data.children}, '[name="infants"]': {value: data.infants}, '[name="singleSupplement"]': {value: data.singleSupplement}, '[name="discount"]': {value: 0}}[selector])});
+  const hasParticipants = [data.adults, data.children, data.infants, data.singleSupplement].some(value => Number(value || 0) > 0);
+  const subtotal = hasParticipants
+    ? pricing.adult * Number(data.adults || 0) + pricing.child * Number(data.children || 0) + pricing.infant * Number(data.infants || 0) + pricing.solo * Number(data.singleSupplement || 0)
+    : (Number(data.discount || 0) < 100 ? total / (1 - Number(data.discount || 0) / 100) : total);
+  const issueDate = new Date(documentDate || Date.now());
+  const displayedDate = Number.isNaN(issueDate.getTime()) ? '—' : new Intl.DateTimeFormat('en-GB').format(issueDate);
   const discountAmount = Math.max(0, subtotal - Number(total || 0));
-  return `<!doctype html><html><head><meta charset="UTF-8"><title>${data.id || 'Quotation'}</title><style>@page{size:210mm 297mm;margin:14mm}*{box-sizing:border-box}body{margin:0;padding:14mm;font-family:Arial,sans-serif;color:#24364a;font-size:12px}@media print{body{padding:0}}.sheet{width:100%;min-height:267mm}.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #18a889;padding-bottom:18px}.brand{display:flex;gap:10px;align-items:center}.logo{width:42px;height:42px;border-radius:12px;background:#18a889;color:#fff;display:grid;place-items:center;font-size:24px;font-weight:800}.company h1{margin:0;font-size:21px;color:#122238}.company p{margin:4px 0 0;color:#718096}.quote-meta{text-align:right}.quote-meta h2{margin:0 0 6px;color:#18a889;font-size:22px}.quote-meta p{margin:3px 0;color:#718096}.section{margin-top:24px}.section-title{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#18a889;margin-bottom:8px}.recipient{background:#f4faf8;border:1px solid #d9eee8;border-radius:8px;padding:13px;display:grid;grid-template-columns:120px 1fr;gap:6px}.recipient strong{color:#718096}.package{border:1px solid #dce5eb;border-radius:8px;padding:15px}.package h3{margin:0 0 5px;font-size:17px}.package p{margin:0;color:#718096}.package-notes{display:grid;grid-template-columns:1fr;gap:8px;margin-top:72px;width:65%;text-align:left}.package-note{padding:0}.package-note strong{display:block;color:#477466;margin-bottom:5px}.package-note ul{margin:0;padding-left:18px}.package-note li{margin:3px 0}.pricing{width:100%;border-collapse:collapse;margin-top:12px}.pricing th{background:#edf8f5;color:#477466;text-align:left;font-size:11px}.pricing th,.pricing td{padding:10px;border-bottom:1px solid #e7edf0}.pricing td:nth-child(2),.pricing td:nth-child(3),.pricing td:nth-child(4),.pricing th:nth-child(2),.pricing th:nth-child(3),.pricing th:nth-child(4){text-align:right}.totals{margin:72px 0 0 auto;width:280px}.totals div{display:flex;justify-content:space-between;padding:5px 0}.totals .grand{border-top:2px solid #18a889;margin-top:5px;padding-top:10px;font-size:17px;font-weight:800;color:#18a889}.footer{border-top:1px solid #dce5eb;margin-top:34px;padding-top:12px;color:#8492a3;text-align:center;font-size:10px}</style></head><body><main class="sheet"><header class="header"><div class="brand"><div class="logo">M</div><div class="company"><h1>Milas Travel &amp; Tours</h1><p>Sabah, Malaysia</p></div></div><div class="quote-meta"><h2>QUOTATION</h2><p><strong>${data.id || '—'}</strong></p><p>${new Intl.DateTimeFormat('en-GB').format(new Date())}</p></div></header><section class="section"><div class="section-title">Bill to</div><div class="recipient"><strong>Name</strong><span>${data.customer || '—'}</span><strong>Phone</strong><span>${data.phone || '—'}</span><strong>Email</strong><span>${data.email || '—'}</span></div></section><section class="section"><div class="section-title">Package details</div><div class="package"><h3>${packageName || '—'}</h3><p>Travel date: ${data.travelDate ? formatTravelDate(data.travelDate) : '—'}</p></div><table class="pricing"><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody>${line('Adult',data.adults,pricing.adult)}${line('Child',data.children,pricing.child)}${line('Infant',data.infants,pricing.infant)}${line('Single supplement',data.singleSupplement,pricing.solo)}</tbody></table>${packageNotes ? `<div class="package-notes">${packageNotes}</div>` : ''}<div class="totals"><div><span>Subtotal</span><strong>RM ${Number(subtotal).toFixed(2)}</strong></div><div><span>Discount (${data.discount || 0}%)</span><strong>- RM ${discountAmount.toFixed(2)}</strong></div><div class="grand"><span>Total</span><span>RM ${Number(total || 0).toFixed(2)}</span></div></div></section><footer class="footer">Thank you for choosing Milas Travel &amp; Tours · Sabah, Malaysia</footer></main></body></html>`;
+  const bankDetailsMarkup = documentType === 'INVOICE' && bankDetails?.bankName && bankDetails?.accountName && bankDetails?.accountNumber
+    ? `<section class="bank-details" aria-label="Bank details"><div class="section-title">Bank details</div><dl><dt>Bank</dt><dd>${escapeDocumentText(bankDetails.bankName)}</dd><dt>Account name</dt><dd>${escapeDocumentText(bankDetails.accountName)}</dd><dt>Account no.</dt><dd class="bank-account-number">${escapeDocumentText(bankDetails.accountNumber)}</dd></dl></section>`
+    : '';
+
+  return `<!doctype html><html><head><meta charset="UTF-8"><title>${escapeDocumentText(data.id || documentType)}</title><style>@page{size:210mm 297mm;margin:14mm}*{box-sizing:border-box}body{margin:0;padding:14mm;font-family:Arial,sans-serif;color:#24364a;font-size:12px}@media print{body{padding:0}}.sheet{width:100%;min-height:267mm}.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #18a889;padding-bottom:18px}.brand{display:flex;gap:10px;align-items:center}.logo{width:42px;height:42px;border-radius:12px;background:#18a889;color:#fff;display:grid;place-items:center;font-size:24px;font-weight:800}.company h1{margin:0;font-size:21px;color:#122238}.company p{margin:4px 0 0;color:#718096}.quote-meta{text-align:right}.quote-meta h2{margin:0 0 6px;color:#18a889;font-size:22px}.quote-meta p{margin:3px 0;color:#718096}.section{margin-top:24px}.section-title{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#18a889;margin-bottom:8px}.recipient{background:#f4faf8;border:1px solid #d9eee8;border-radius:8px;padding:13px;display:grid;grid-template-columns:120px 1fr;gap:6px}.recipient strong{color:#718096}.package{border:1px solid #dce5eb;border-radius:8px;padding:15px}.package h3{margin:0 0 5px;font-size:17px}.package p{margin:0;color:#718096}.package-notes{display:grid;grid-template-columns:1fr;gap:8px;margin-top:72px;width:65%;text-align:left}.package-note{padding:0}.package-note strong{display:block;color:#477466;margin-bottom:5px}.package-note ul{margin:0;padding-left:18px}.package-note li{margin:3px 0}.pricing{width:100%;border-collapse:collapse;margin-top:12px}.pricing th{background:#edf8f5;color:#477466;text-align:left;font-size:11px}.pricing th,.pricing td{padding:10px;border-bottom:1px solid #e7edf0}.pricing td:nth-child(2),.pricing td:nth-child(3),.pricing td:nth-child(4),.pricing th:nth-child(2),.pricing th:nth-child(3),.pricing th:nth-child(4){text-align:right}.totals{margin:72px 0 0 auto;width:280px}.totals div{display:flex;justify-content:space-between;padding:5px 0}.totals .grand{border-top:2px solid #18a889;margin-top:5px;padding-top:10px;font-size:17px;font-weight:800;color:#18a889}.bank-details{width:58%;margin:28px 0 0;padding:14px;border:1px solid #d9eee8;border-left:3px solid #18a889;border-radius:8px;background:#f4faf8;text-align:left;break-inside:avoid;page-break-inside:avoid}.bank-details dl{display:grid;grid-template-columns:88px minmax(0,1fr);gap:7px 10px;margin:0;line-height:1.5}.bank-details dt{color:#718096}.bank-details dd{margin:0;font-weight:700;overflow-wrap:anywhere}.bank-account-number{font-variant-numeric:tabular-nums;letter-spacing:.03em}.footer{border-top:1px solid #dce5eb;margin-top:34px;padding-top:12px;color:#8492a3;text-align:center;font-size:10px}</style></head><body><main class="sheet"><header class="header"><div class="brand"><div class="logo">M</div><div class="company"><h1>Milas Travel &amp; Tours</h1><p>Sabah, Malaysia</p></div></div><div class="quote-meta"><h2>${documentType}</h2><p><strong>${escapeDocumentText(data.id || '—')}</strong></p><p>${displayedDate}</p>${quotationReference ? `<p>Quotation: ${escapeDocumentText(quotationReference)}</p>` : ''} </div></header><section class="section"><div class="section-title">Bill to</div><div class="recipient"><strong>Name</strong><span>${escapeDocumentText(data.customer || '—')}</span><strong>Phone</strong><span>${escapeDocumentText(data.phone || '—')}</span><strong>Email</strong><span>${escapeDocumentText(data.email || '—')}</span></div></section><section class="section"><div class="section-title">Package details</div><div class="package"><h3>${escapeDocumentText(packageName || '—')}</h3><p>Travel date: ${data.travelDate ? formatTravelDate(data.travelDate) : '—'}</p></div><table class="pricing"><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody>${line('Adult',data.adults,pricing.adult)}${line('Child',data.children,pricing.child)}${line('Infant',data.infants,pricing.infant)}${line('Single supplement',data.singleSupplement,pricing.solo)}${!hasParticipants ? `<tr><td>${escapeDocumentText(packageName || 'Package')}</td><td>1</td><td>RM ${subtotal.toFixed(2)}</td><td>RM ${subtotal.toFixed(2)}</td></tr>` : ''}</tbody></table>${packageNotes ? `<div class="package-notes">${packageNotes}</div>` : ''}<div class="totals"><div><span>Subtotal</span><strong>RM ${Number(subtotal).toFixed(2)}</strong></div><div><span>Discount (${data.discount || 0}%)</span><strong>- RM ${discountAmount.toFixed(2)}</strong></div><div class="grand"><span>Total</span><span>RM ${Number(total || 0).toFixed(2)}</span></div></div>${data.notes ? `<div class="section"><div class="section-title">Notes</div><p style="white-space:pre-wrap">${escapeDocumentText(data.notes)}</p></div>` : ''} </section>${bankDetailsMarkup}<footer class="footer">Thank you for choosing Milas Travel &amp; Tours · Sabah, Malaysia</footer></main></body></html>`;
 }
 function handleQuotationSubmit(event) {
   event.preventDefault();
@@ -783,6 +890,7 @@ function genericView(key) {
   if (key === 'bookings') return allBookingsViewV4();
   if (key === 'pipeline') return pipelineView();
   if (key === 'quotations') return quotationsView();
+  if (key === 'invoices') return invoicesView();
   if (key === 'calendar') return calendarView();
   if (key === 'upcoming') return upcomingView();
   if (key === 'reports') return reportsView();
@@ -825,18 +933,42 @@ function markLeadContacted(leadId) {
 }
 
 document.addEventListener('click', (event) => {
-  const shareQuotation = event.target.closest('[data-share-quotation]');
-  if (shareQuotation) {
+  const openInvoice = event.target.closest('[data-open-invoice]');
+  if (openInvoice) {
     event.preventDefault();
-    const payload = JSON.parse(decodeURIComponent(shareQuotation.dataset.shareQuotation));
+    const invoice = JSON.parse(decodeURIComponent(openInvoice.dataset.openInvoice)).data;
+    document.querySelector('#invoicePreviewModal')?.remove();
+    document.body.insertAdjacentHTML('beforeend', invoicePreview(invoice));
+    return;
+  }
+  const convertInvoice = event.target.closest('[data-convert-invoice]');
+  if (convertInvoice) {
+    event.preventDefault();
+    const quotation = JSON.parse(decodeURIComponent(convertInvoice.dataset.convertInvoice));
+    const invoice = convertQuotationToInvoice(quotation);
+    document.querySelector('#invoicePreviewModal')?.remove();
+    document.body.insertAdjacentHTML('beforeend', invoicePreview(invoice));
+    return;
+  }
+  const printInvoice = event.target.closest('[data-print-invoice]');
+  if (printInvoice) {
+    event.preventDefault();
     const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(quotationPdfMarkup(payload));
-      printWindow.document.close();
-      printWindow.focus();
-      setTimeout(() => printWindow.print(), 700);
-      return;
-    }
+    if (!printWindow) return;
+    printWindow.document.write(invoicePdfMarkup(JSON.parse(decodeURIComponent(printInvoice.dataset.printInvoice))));
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => printWindow.print(), 250);
+    return;
+  }
+  const whatsappQuotation = event.target.closest('[data-whatsapp-quotation]');
+  if (whatsappQuotation && !whatsappQuotation.disabled) {
+    event.preventDefault();
+    const payload = JSON.parse(decodeURIComponent(whatsappQuotation.dataset.whatsappQuotation));
+    const phone = String(payload.phone || '').replace(/[^0-9]/g, '');
+    if (!phone) return;
+    const message = `Hi ${payload.customer || 'there'}, regarding quotation ${payload.quotationId || ''}. Please let us know if you have any questions.`;
+    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, '_blank', 'noopener');
     return;
   }
   const printQuotation = event.target.closest('[data-print-quotation]');
@@ -861,6 +993,10 @@ document.addEventListener('click', (event) => {
   }
   if (event.target.closest('[data-close-quotation-preview]')) {
     document.querySelector('#quotationPreviewModal')?.remove();
+    return;
+  }
+  if (event.target.closest('[data-close-invoice-preview]')) {
+    document.querySelector('#invoicePreviewModal')?.remove();
     return;
   }
   const openQuotation = event.target.closest('[data-open-quotation]');
@@ -892,7 +1028,7 @@ document.addEventListener('click', (event) => {
       Object.assign(lead, formData, {status: 'Quotation Sent'});
       localStorage.setItem('milas-leads', JSON.stringify(leads));
       const quotations = storedQuotations();
-      quotations.unshift({
+      const quotation = {
         id: nextQuotationNumber(quotations),
         leadId: lead.id,
         customer: formData.customer,
@@ -903,13 +1039,15 @@ document.addEventListener('click', (event) => {
         total: formData.value || '—',
         status: 'Draft',
         createdAt: new Date().toISOString(),
-      });
+      };
+      quotations.unshift(quotation);
       localStorage.setItem('milas-quotations', JSON.stringify(quotations));
       document.querySelector('#leadModal')?.remove();
       state.active = 'quotations';
-      state.toast = 'Quotation baharu berjaya dijana.';
+      state.toast = '';
       render();
-      setTimeout(() => { state.toast = ''; render(); }, 2200);
+      document.body.insertAdjacentHTML('beforeend', quotationEditor(quotation));
+      updateQuotationTotal(document.querySelector('#quotationForm'));
     }
     return;
   }
