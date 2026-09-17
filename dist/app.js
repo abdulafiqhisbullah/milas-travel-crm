@@ -1,5 +1,15 @@
 const sharedData = { suppliers: null, bookings: null };
 
+window.addEventListener('storage', event => {
+  if (event.key !== 'milas-bookings' || !event.newValue) return;
+  try {
+    const bookings = JSON.parse(event.newValue);
+    if (!Array.isArray(bookings)) return;
+    sharedData.bookings = bookings;
+    if (state?.active === 'bookings') render();
+  } catch {}
+});
+
 function persistSharedCollection(collection, records) {
   sharedData[collection] = records;
   try { localStorage.setItem(`milas-${collection}`, JSON.stringify(records)); } catch {}
@@ -30,11 +40,11 @@ async function loadSharedData() {
 
 const navGroups = [
   { label: 'Workspace', items: [['dashboard','Dashboard','▦']] },
-  { label: 'CRM', items: [['leads','Leads','◌'],['customers','Customers','◎'],['pipeline','Sales Pipeline','⌁'],['followups','Follow-ups','◷']] },
+  { label: 'CRM', items: [['leads','Leads','◌'],['pipeline','Sales Pipeline','⌁'],['followups','Follow-ups','◷']] },
   { label: 'Sales', items: [['quotations','Quotations','▤'],['invoices','Invoices','▧']] },
   { label: 'Bookings', items: [['bookings','All Bookings','▣'],['upcoming','Upcoming Travel','◫']] },
-  { label: 'Catalogue', items: [['products','Tour Packages','◇']] },
-  { label: 'Finance & Ops', items: [['payments','Payment Records','₿'],['outstanding','Outstanding Payments','!'],['suppliers','Suppliers','⬡'],['reports','Reports','⌘']] },
+  { label: 'Finance & Ops', items: [['payments','Payment Records','₿'],['outstanding','Outstanding Payments','!'],['reports','Reports','⌘']] },
+  { label: 'Databased', items: [['customers','Customers','◎'],['suppliers','Suppliers','⬡'],['products','Tour Packages','◇']] },
   { label: 'System', items: [['settings','Settings','⚙']] },
 ];
 
@@ -100,6 +110,44 @@ const moduleData = {
   operations: { heads:['Task','Booking','Travel date','Assigned to','Due','Status'], rows:[['Confirm tour','MIL-260916-001','22 Sep 2026','Rizal Karim','18 Sep','Ready'],['Confirm transport','MIL-260915-008','24 Sep 2026','Rizal Karim','19 Sep','Pending'],['Prepare traveller info','MIL-260915-007','30 Sep 2026','Sarah Ahmad','25 Sep','Pending']] },
 };
 
+function dashboardMoney(value) {
+  return `RM ${Number(value || 0).toLocaleString('en-MY', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+}
+function dashboardDateInRange(value, range) {
+  const date = parseBookingDate(value);
+  if (!date) return range === 'This Month';
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (range === 'Today') return date.toDateString() === start.toDateString();
+  if (range === 'This Week') { const weekStart = new Date(start); weekStart.setDate(start.getDate() - start.getDay()); const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 7); return date >= weekStart && date < weekEnd; }
+  if (range === 'Custom Date') return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+}
+function dashboard() {
+  const leads = storedLeads(), quotations = storedQuotations(), bookings = storedBookings(), invoices = storedInvoices();
+  const scopedLeads = leads.filter(item => dashboardDateInRange(item.receivedDate, state.range));
+  const scopedQuotations = quotations.filter(item => dashboardDateInRange(item.travelDate, state.range));
+  const scopedBookings = bookings.filter(item => item.status !== 'CANCEL' && dashboardDateInRange(item.startDate, state.range));
+  const confirmed = scopedBookings.filter(item => item.status === 'CONFIRMED');
+  const bookingValue = scopedBookings.reduce((sum, item) => sum + Number(String(item.sales || item.value || 0).replace(/[^0-9.-]/g, '') || 0), 0);
+  const cashCollected = invoices.reduce((sum, invoice) => sum + invoicePaymentState(invoice).paid, 0);
+  const outstanding = invoices.reduce((sum, invoice) => sum + invoicePaymentState(invoice).balance, 0);
+  const upcoming = bookings.filter(item => { const date = parseBookingDate(item.startDate); const today = new Date(); const limit = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30); return date && date >= new Date(today.getFullYear(), today.getMonth(), today.getDate()) && date <= limit && !['CANCEL','COMPLETE'].includes(item.status); });
+  const followups = leads.filter(item => item.followUpStatus !== 'Done' && item.followUpDate && item.followUpDate <= localDateKey());
+  const funnel = { leads: scopedLeads.length, quotation: scopedQuotations.length, booking: scopedBookings.length, confirmed: confirmed.length };
+  const maxFunnel = Math.max(1, funnel.leads, funnel.quotation, funnel.booking, funnel.confirmed);
+  const recent = [...bookings].sort((a, b) => (parseBookingDate(b.bookingDate) || 0) - (parseBookingDate(a.bookingDate) || 0)).slice(0, 5);
+  const upcomingWeek = bookings.filter(item => { const date = parseBookingDate(item.startDate); const today = new Date(); const limit = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 7); return date && date >= new Date(today.getFullYear(), today.getMonth(), today.getDate()) && date <= limit && !['CANCEL','COMPLETE'].includes(item.status); }).slice(0, 3);
+  const won = scopedLeads.filter(item => item.status === 'Won').length;
+  const monthlyInvoices = invoices.filter(item => dashboardDateInRange(item.issuedAt, 'This Month'));
+  const salesMonthly = monthlyInvoices.reduce((sum, item) => sum + Number(String(item.total || 0).replace(/[^0-9.-]/g, '') || 0), 0);
+  const completedTours = bookings.filter(isCompletedBooking);
+  const salesComplete = completedTours.reduce((sum, item) => sum + bookingSalesValue(item), 0);
+  const conversionRate = scopedLeads.length ? `${((won / scopedLeads.length) * 100).toFixed(1)}%` : '0.0%';
+  const row = item => `<tr><td><strong>${item.orderId || '—'}</strong></td><td>${item.customer || '—'}</td><td>${packageDisplay(item.package || item.name)}</td><td>${formatTravelDate(item.startDate)}</td><td>${item.sales || '—'}</td><td><span class="status ${String(item.status || '').toLowerCase().replaceAll(' ','-')}">${item.status || '—'}</span></td></tr>`;
+  return `<section class="dashboard-view"><div class="metrics">${metric('New Leads',scopedLeads.filter(item => item.status === 'New Lead').length,'Current filter','teal')}${metric('Quotation',scopedQuotations.length,'Quotation dalam filter','blue')}${metric('Won',won,'Closed successfully','violet')}${metric('Conversion Rate',conversionRate,'New Leads → Won','green')}${metric('Sales Monthly',dashboardMoney(salesMonthly),'Invoice generated this month','violet')}${metric('Sales Complete',dashboardMoney(salesComplete),`${completedTours.length} completed tour${completedTours.length === 1 ? '' : 's'}`,'green')}${metric('Cash Collected',dashboardMoney(cashCollected),'Payments received','amber')}${metric('Outstanding',dashboardMoney(outstanding),`${invoices.filter(item => invoicePaymentState(item).balance > 0).length} invoices need follow-up`,'red')}${metric('Upcoming Trips',upcoming.length,'Next 30 days','green')}</div><div class="dashboard-grid"><div class="main-column"><article class="panel funnel-panel"><div class="panel-head"><div><h2>Sales funnel</h2><p>Data sebenar mengikut ${state.range.toLowerCase()}</p></div><button class="ghost-btn" data-nav="pipeline">View pipeline <span>→</span></button></div><div class="funnel">${[['Leads',funnel.leads,'teal'],['Quotation',funnel.quotation,'blue'],['Booking',funnel.booking,'violet'],['Confirmed',funnel.confirmed,'amber']].map(([label,value]) => `<div class="funnel-row"><span>${label}</span><div class="bar"><i style="width:${Math.round(value / maxFunnel * 100)}%"></i></div><b>${value}</b></div>`).join('')}</div></article><article class="panel"><div class="panel-head"><div><h2>Recent bookings</h2><p>Booking terbaru dalam source of truth</p></div><button class="ghost-btn" data-nav="bookings">View all <span>→</span></button></div><div class="table-wrap"><table><thead><tr><th>Booking</th><th>Customer</th><th>Package</th><th>Travel date</th><th>Value</th><th>Status</th></tr></thead><tbody>${recent.length ? recent.map(row).join('') : '<tr><td colspan="6" class="empty-cell">Tiada booking.</td></tr>'}</tbody></table></div></article></div><aside class="side-column"><article class="panel attention"><div class="panel-head"><div><h2>Needs attention</h2><p>Tindakan berdasarkan rekod semasa</p></div><span class="count-badge">${invoices.filter(item => invoicePaymentState(item).balance > 0).length + followups.length + upcomingWeek.length}</span></div><div class="attention-list"><div><span class="attention-icon red-bg">!</span><section><strong>Outstanding payment</strong><small>${invoices.filter(item => invoicePaymentState(item).balance > 0).length} invoice belum selesai</small></section><b data-nav="outstanding">→</b></div><div><span class="attention-icon amber-bg">◷</span><section><strong>Follow-ups due</strong><small>${followups.length} follow-up perlu tindakan</small></section><b data-nav="followups">→</b></div><div><span class="attention-icon blue-bg">⌂</span><section><strong>Trips this week</strong><small>${upcomingWeek.length} booking perlu persediaan</small></section><b data-nav="upcoming">→</b></div></div></article><article class="panel mini-calendar"><div class="panel-head"><div><h2>Upcoming travel</h2><p>Next 7 days</p></div></div>${upcomingWeek.length ? upcomingWeek.map(item => { const date = parseBookingDate(item.startDate); return `<div class="trip"><span class="date-box"><b>${String(date.getDate()).padStart(2,'0')}</b><small>${new Intl.DateTimeFormat('en',{month:'short'}).format(date).toUpperCase()}</small></span><section><strong>${packageDisplay(item.package || item.name)}</strong><small>${item.customer || 'Customer'} · ${item.adult || 0} travellers</small></section><span class="teal-tag">${item.status || 'Ready'}</span></div>`; }).join('') : '<div class="empty-bookings">Tiada perjalanan dalam 7 hari.</div>'}</article></aside></div></section>`;
+}
+
 function localDateKey(offset = 0) {
   const date = new Date();
   date.setDate(date.getDate() + offset);
@@ -152,10 +200,10 @@ function leadEditor(record = {}) {
   const requiredContact = record.id && lead.status === 'Contacted' ? 'required' : '';
   const quotationAction = record.id && lead.status === 'Contacted' ? `<button type="button" class="proceed-quotation" data-proceed-quotation="${lead.id}">Proceed to quotation</button>` : '';
   const editorActions = quotationAction || '<button type="button" class="ghost-btn" data-close-lead>Cancel</button><button type="submit" class="primary-btn">Save lead</button>';
-  return `<div class="modal-backdrop" id="leadModal"><form class="booking-modal lead-modal" id="leadForm" onsubmit="return handleLeadSubmit(event)"><div class="modal-head"><div><span class="eyebrow">CRM / Leads</span><h2>${record.id ? 'Edit lead' : 'New lead'}</h2><p>Simpan dan urus lead baharu Milas Travel.</p></div><button type="button" class="modal-close" data-close-lead>×</button></div><div class="editor-grid">${input('id','Lead ID')}${input('customer','Customer name','text',requiredContact)}${input('phone','Phone number','tel',requiredContact)}${input('email','Email','email',requiredContact)}<label>Source<select name="source">${leadSources.map(source => `<option ${lead.source === source ? 'selected' : ''}>${source}</option>`).join('')}</select></label>${input('packageName','Interested package')}${input('value','Estimated value')}${input('receivedDate','Lead received date','date','data-lead-received-date')}${input('followUpDate','Follow-up date','date','readonly data-lead-follow-up')}<label>Status<select name="status">${leadStatuses.map(status => `<option ${lead.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></label><label>Follow-up status<select name="followUpStatus"><option ${lead.followUpStatus !== 'Done' ? 'selected' : ''}>Pending</option><option ${lead.followUpStatus === 'Done' ? 'selected' : ''}>Done</option></select></label><label class="full-width">Notes<textarea name="notes" rows="4">${lead.notes || ''}</textarea></label></div><div class="modal-actions">${editorActions}</div></form></div>`;
+  return `<div class="modal-backdrop" id="leadModal"><form class="booking-modal lead-modal" id="leadForm" onsubmit="return handleLeadSubmit(event)"><div class="modal-head"><div><span class="eyebrow">CRM / Leads</span><h2>${record.id ? 'Edit lead' : 'New lead'}</h2><p>Simpan dan urus lead baharu Milas Travel.</p></div><button type="button" class="modal-close" data-close-lead>×</button></div><div class="editor-grid">${input('id','Lead ID')}${input('customer','Customer name','text',requiredContact)}${phoneFieldMarkup('phone','Phone number',lead.phone,Boolean(requiredContact))}${input('email','Email','email',requiredContact)}${nationalityFieldMarkup(lead.nationality)}<label>Source<select name="source">${leadSources.map(source => `<option ${lead.source === source ? 'selected' : ''}>${source}</option>`).join('')}</select></label>${input('packageName','Interested package')}${input('value','Estimated value')}${input('receivedDate','Lead received date','date','data-lead-received-date')}${input('followUpDate','Follow-up date','date','readonly data-lead-follow-up')}<label>Status<select name="status">${leadStatuses.map(status => `<option ${lead.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></label><label>Follow-up status<select name="followUpStatus"><option ${lead.followUpStatus !== 'Done' ? 'selected' : ''}>Pending</option><option ${lead.followUpStatus === 'Done' ? 'selected' : ''}>Done</option></select></label><label class="full-width">Notes<textarea name="notes" rows="4">${lead.notes || ''}</textarea></label></div><div class="modal-actions">${editorActions}</div></form></div>`;
 }
 function persistLeadForm(form) {
-  const lead = Object.fromEntries(new FormData(form).entries()), leads = storedLeads(), originalId = form.dataset.originalLeadId || lead.id;
+  const lead = combinePhoneField(Object.fromEntries(new FormData(form).entries())), leads = storedLeads(), originalId = form.dataset.originalLeadId || lead.id;
   lead.receivedDate = lead.receivedDate || localDateKey();
   lead.followUpDate = leadFollowUpDate(lead.receivedDate);
   const index = leads.findIndex(item => item.id === originalId);
@@ -185,7 +233,7 @@ function quotationDocumentSnapshot(quotation) {
   return JSON.parse(JSON.stringify({
     ...quotation,
     documentProduct: product,
-    documentPricing: quotationPricing(quotation.packageId)
+    documentPricing: quotationPricing(quotation.packageId, quotation.optionalPackage)
   }));
 }
 function storedInvoices() {
@@ -207,13 +255,25 @@ function nextInvoiceNumber(invoices) {
   const sequence = invoices.map(invoice => Number(String(invoice.id || '').match(/(\d+)$/)?.[1])).filter(Number.isFinite);
   return `INV-${String(Math.max(0, ...sequence) + 1).padStart(6, '0')}`;
 }
+function markLeadInvoiceSent(leadId) {
+  if (!leadId) return;
+  const leads = storedLeads();
+  const index = leads.findIndex(lead => lead.id === leadId);
+  if (index < 0) return;
+  leads[index] = {...leads[index], status: 'Invoice Sent'};
+  localStorage.setItem('milas-leads', JSON.stringify(leads));
+}
 function convertQuotationToInvoice(quotation) {
   const invoices = storedInvoices();
   const existing = invoices.find(invoice => invoice.quotationId === quotation.id);
-  if (existing) return existing;
+  if (existing) {
+    markLeadInvoiceSent(existing.leadId || quotation.leadId);
+    return existing;
+  }
   const invoice = {...quotation, id: nextInvoiceNumber(invoices), quotationId: quotation.id, status: 'Draft', issuedAt: new Date().toISOString(), quotationSnapshot: quotationDocumentSnapshot(quotation)};
   invoices.unshift(invoice);
   localStorage.setItem('milas-invoices', JSON.stringify(invoices));
+  markLeadInvoiceSent(invoice.leadId);
   const quotations = storedQuotations();
   const index = quotations.findIndex(item => item.id === quotation.id);
   if (index >= 0) {
@@ -298,6 +358,25 @@ function recordInvoicePayment(invoice, paymentType, paymentAmount) {
   const bookings = storedBookings(), booking = bookings.find(item => item.invoiceId === current.id);
   if (booking) { booking.payment = paymentLabel + ' (RM ' + amount.toFixed(2) + ')'; booking.paymentAmount = current.paymentAmount; booking.balancePayment = newBalance.toFixed(2); persistSharedCollection('bookings', bookings); }
   else { bookings.unshift({ status: 'NEW ORDER', name: (current.packageName || 'Invoice') + ' — ' + current.id, bookingDate: new Date().toLocaleDateString('en-GB'), startDate: current.travelDate || '', assignee: 'Afiq Milas', channel: 'Quotation', supplier: 'Pending', type: 'Multi Day', customer: current.customer || '', package: current.packageName || '', adult: current.adults || '0', children: current.children || '0', sales: 'RM ' + summary.total.toFixed(2), payment: paymentLabel + ' (RM ' + amount.toFixed(2) + ')', paymentAmount: current.paymentAmount, balancePayment: newBalance.toFixed(2), email: current.email || '', orderId: nextBookingId(bookings), proof: 'Attached', invoice: current.id, invoiceId: current.id, commission: '5%' }); persistSharedCollection('bookings', bookings); }
+  const syncedBooking = bookings.find(item => item.invoiceId === current.id);
+  if (syncedBooking) {
+    syncedBooking.sales = 'RM ' + summary.total.toFixed(2);
+    syncedBooking.total = 'RM ' + summary.total.toFixed(2);
+    syncedBooking.nationality = current.nationality || current.quotationSnapshot?.nationality || '';
+    syncedBooking.optionalPackage = current.optionalPackage || current.quotationSnapshot?.optionalPackage || '';
+    syncedBooking.addOns = current.selectedAddons || current.quotationSnapshot?.selectedAddons || [];
+    syncedBooking.selectedAddons = current.selectedAddons || current.quotationSnapshot?.selectedAddons || [];
+    syncedBooking.adult = current.adults || '0';
+    syncedBooking.children = current.children || '0';
+    syncedBooking.infant = current.infants || '0';
+    syncedBooking.singleSupplement = current.singleSupplement || '0';
+    syncedBooking.payment = newBalance === 0 ? 'Paid' : 'Pending';
+    syncedBooking.paymentAmount = current.paymentAmount;
+    syncedBooking.amountPayment = current.paymentAmount;
+    syncedBooking.amountOutstanding = newBalance.toFixed(2);
+    syncedBooking.balancePayment = newBalance.toFixed(2);
+    persistSharedCollection('bookings', bookings);
+  }
   return true;
 }
 function addQuotationInvoiceButtons() {
@@ -320,10 +399,10 @@ function nextQuotationNumber(quotations) {
   const sequence = quotations.map(quotation => Number(String(quotation.id || '').match(/(\d+)$/)?.[1])).filter(Number.isFinite);
   return `QT-${localDateKey().replaceAll('-', '').slice(2)}-${String(Math.max(0, ...sequence) + 1).padStart(3, '0')}`;
 }
-function quotationPricing(packageId) {
+function quotationPricing(packageId, optionalPackage = '') {
   const product = storedTourProducts().find(item => item.productId === packageId || item.name === packageId);
   const records = pricingDataFromValue(product?.pricing);
-  const selected = records.find(item => !item.optional) || records[0];
+  const selected = (optionalPackage && records.find(item => item.optional && item.option === optionalPackage)) || records.find(item => !item.optional) || records[0];
   const price = key => {
     const raw = selected?.prices?.[key];
     if (raw && typeof raw === 'object') return Number(raw.basePrice || raw.supplierCost || 0);
@@ -332,10 +411,35 @@ function quotationPricing(packageId) {
   const legacyAdult = Number(String(product?.pricing || '').match(/Adult:\s*(?:RM\s*)?([\d,\.]+)/i)?.[1]?.replaceAll(',', '') || 0);
   return {adult: price('adult') || legacyAdult, child: price('child'), infant: price('infant'), solo: price('solo')};
 }
+function quotationOptionalPackages(packageId) {
+  const product = storedTourProducts().find(item => item.productId === packageId || item.name === packageId);
+  return pricingDataFromValue(product?.pricing).filter(item => item.optional && !legacyPricingOptions.includes(item.option));
+}
+function quotationAddons(packageId) {
+  const product = storedTourProducts().find(item => item.productId === packageId || item.name === packageId);
+  return addonsDataFromValue(product?.addons).map(addon => ({...addon, basePrice: Number(addon.basePrice || addon.price || 0) || 0})).filter(addon => addon.name);
+}
+function selectedQuotationAddons(value) {
+  if (Array.isArray(value)) return value;
+  try { const parsed = JSON.parse(value || '[]'); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+}
+function quotationExtrasMarkup(packageId, quotation = {}) {
+  const optionalPackages = quotationOptionalPackages(packageId);
+  const addons = quotationAddons(packageId);
+  const selectedAddons = selectedQuotationAddons(quotation.selectedAddons).map(addon => addon.name);
+  if (!optionalPackages.length && !addons.length) return '';
+  const selectedAddonLabel = selectedAddons.length ? selectedAddons.join(', ') : 'Pilih add-on';
+  return `<div class="quotation-extras full-width" data-quotation-extras>${optionalPackages.length ? `<label>Optional package<select name="optionalPackage" data-quotation-calculator><option value="">Base package</option>${optionalPackages.map(option => `<option value="${escapeMarkup(option.option)}" ${quotation.optionalPackage === option.option ? 'selected' : ''}>${escapeMarkup(option.option)}</option>`).join('')}</select></label>` : ''}${addons.length ? `<label>Add-ons<details class="multi-select quotation-addon-multi"><summary>${escapeMarkup(selectedAddonLabel)}</summary><div class="multi-select-options">${addons.map(addon => `<label><input type="checkbox" name="selectedAddons" value="${escapeMarkup(JSON.stringify({name: addon.name, basePrice: addon.basePrice}))}" data-quotation-calculator ${selectedAddons.includes(addon.name) ? 'checked' : ''} />${escapeMarkup(addon.name)} <span>RM ${addon.basePrice.toFixed(2)}</span></label>`).join('')}</div></details></label>` : ''}</div>`;
+}
+function quotationAddonsTotal(form) {
+  return selectedQuotationAddons(new FormData(form).getAll('selectedAddons')).reduce((sum, value) => {
+    try { const addon = typeof value === 'string' ? JSON.parse(value) : value; return sum + (Number(addon.basePrice) || 0); } catch { return sum; }
+  }, 0);
+}
 function quotationTotal(form) {
-  const pricing = quotationPricing(form.querySelector('[data-quotation-package]')?.value);
+  const pricing = quotationPricing(form.querySelector('[data-quotation-package]')?.value, form.querySelector('[name="optionalPackage"]')?.value);
   const number = key => Number(form.querySelector(`[name="${key}"]`)?.value || 0);
-  const subtotal = pricing.adult * number('adults') + pricing.child * number('children') + pricing.infant * number('infants') + pricing.solo * number('singleSupplement');
+  const subtotal = pricing.adult * number('adults') + pricing.child * number('children') + pricing.infant * number('infants') + pricing.solo * number('singleSupplement') + quotationAddonsTotal(form);
   const discount = Math.min(100, Math.max(0, number('discount')));
   return Math.max(0, subtotal * (1 - discount / 100));
 }
@@ -357,9 +461,9 @@ function quotationEditor(record = {}) {
   if (!quotation.id) quotation.id = nextQuotationNumber(storedQuotations());
   const products = storedTourProducts();
   const selectedProduct = products.find(product => product.productId === quotation.packageId || product.name === quotation.packageName || (quotation.packageName && String(quotation.packageName).includes(product.name))) || products[0];
-  const input = (key, label, type = 'text') => `<label>${label}<input name="${key}" type="${type}" value="${quotation[key] || ''}" ${key === 'id' ? 'readonly' : ''} /></label>`;
+  const input = (key, label, type = 'text') => key === 'phone' ? phoneFieldMarkup('phone', label, quotation.phone) : key === 'email' ? `<label>${label}<input name="${key}" type="${type}" value="${quotation[key] || ''}" /></label>${nationalityFieldMarkup(quotation.nationality)}` : `<label>${label}<input name="${key}" type="${type}" value="${quotation[key] || ''}" ${key === 'id' ? 'readonly' : ''} /></label>`;
   const packageId = selectedProduct?.productId || quotation.packageId || '';
-  return `<div class="modal-backdrop" id="quotationModal"><form class="booking-modal quotation-modal" id="quotationForm" onsubmit="return handleQuotationSubmit(event)"><div class="modal-head"><div><span class="eyebrow">Sales / Quotations</span><h2>${record.id ? 'Edit quotation' : 'New quotation'}</h2><p>Lengkapkan dan simpan quotation customer.</p></div><button type="button" class="modal-close" data-close-quotation>×</button></div><div class="editor-grid">${input('id','Quotation number')}${input('leadId','Lead ID')}${input('customer','Customer name')}${input('phone','Phone number','tel')}${input('email','Email','email')}<label class="full-width">Package<select name="packageId" data-quotation-package>${products.length ? products.map(product => `<option value="${product.productId}" ${product.productId === packageId ? 'selected' : ''}>${product.productId} — ${product.name || 'Unnamed package'}</option>`).join('') : '<option value="">Tiada package dalam database</option>'}</select></label>${input('travelDate','Travel date','date')}<label>No of adults<input name="adults" type="number" min="0" step="1" value="${quotation.adults || 0}" data-quotation-calculator /></label><label>No of children<input name="children" type="number" min="0" step="1" value="${quotation.children || 0}" data-quotation-calculator /></label><label>No of infants<input name="infants" type="number" min="0" step="1" value="${quotation.infants || 0}" data-quotation-calculator /></label><label>Single supplement<input name="singleSupplement" type="number" min="0" step="1" value="${quotation.singleSupplement || 0}" data-quotation-calculator /></label><label>Discount (%)<input name="discount" type="number" min="0" max="100" step="0.01" value="${quotation.discount || 0}" data-quotation-calculator /></label><label>Total<input name="total" type="text" value="${quotation.total || '0.00'}" data-quotation-total readonly /></label><label>Status<select name="status">${quotationStatuses.map(status => `<option ${quotation.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></label><label class="full-width">Notes<textarea name="notes" rows="4">${quotation.notes || ''}</textarea></label></div><div class="modal-actions"><button type="button" class="ghost-btn" data-preview-quotation>Preview quotation</button><button type="submit" class="primary-btn">Save</button></div></form></div>`;
+  return `<div class="modal-backdrop" id="quotationModal"><form class="booking-modal quotation-modal" id="quotationForm" onsubmit="return handleQuotationSubmit(event)"><div class="modal-head"><div><span class="eyebrow">Sales / Quotations</span><h2>${record.id ? 'Edit quotation' : 'New quotation'}</h2><p>Lengkapkan dan simpan quotation customer.</p></div><button type="button" class="modal-close" data-close-quotation>×</button></div><div class="editor-grid">${input('id','Quotation number')}${input('leadId','Lead ID')}${input('customer','Customer name')}${input('phone','Phone number','tel')}${input('email','Email','email')}<label class="full-width">Package<select name="packageId" data-quotation-package>${products.length ? products.map(product => `<option value="${product.productId}" ${product.productId === packageId ? 'selected' : ''}>${product.productId} — ${product.name || 'Unnamed package'}</option>`).join('') : '<option value="">Tiada package dalam database</option>'}</select></label><div class="quotation-extras-slot full-width">${quotationExtrasMarkup(packageId, quotation)}</div>${input('travelDate','Travel date','date')}<label>No of adults<input name="adults" type="number" min="0" step="1" value="${quotation.adults || 0}" data-quotation-calculator /></label><label>No of children<input name="children" type="number" min="0" step="1" value="${quotation.children || 0}" data-quotation-calculator /></label><label>No of infants<input name="infants" type="number" min="0" step="1" value="${quotation.infants || 0}" data-quotation-calculator /></label><label>Single supplement<input name="singleSupplement" type="number" min="0" step="1" value="${quotation.singleSupplement || 0}" data-quotation-calculator /></label><label>Discount (%)<input name="discount" type="number" min="0" max="100" step="0.01" value="${quotation.discount || 0}" data-quotation-calculator /></label><label>Total<input name="total" type="text" value="${quotation.total || '0.00'}" data-quotation-total readonly /></label><label>Status<select name="status">${quotationStatuses.map(status => `<option ${quotation.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></label><label class="full-width">Notes<textarea name="notes" rows="4">${quotation.notes || ''}</textarea></label></div><div class="modal-actions"><button type="button" class="ghost-btn" data-preview-quotation>Preview quotation</button><button type="submit" class="primary-btn">Save</button></div></form></div>`;
 }
 function quotationPreview(data, packageName, total) {
   const previewDocument = quotationPdfMarkup({data, packageName, total}).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -376,7 +480,11 @@ function quotationPdfMarkup({data, packageName, total, documentType = 'QUOTATION
     includedItems.length ? `<div class="package-note"><strong>What's included</strong><ul>${includedItems.map(item => `<li>${escapeDocumentText(item)}</li>`).join('')}</ul></div>` : '',
     excludedItems.length ? `<div class="package-note"><strong>What's excluded</strong><ul>${excludedItems.map(item => `<li>${escapeDocumentText(item)}</li>`).join('')}</ul></div>` : '',
   ].join('');
-  const pricing = data.documentPricing || quotationPricing(data.packageId);
+  const itineraryDays = itineraryDaysFromValue(product.itinerary).filter(day => String(day.details || '').trim());
+  const itineraryMarkup = itineraryDays.length ? `<div class="itinerary-notes"><strong>Itinerary</strong>${itineraryDays.map(day => `<div class="itinerary-day"><b>Day ${day.day}</b><span>${escapeDocumentText(day.details)}</span></div>`).join('')}</div>` : '';
+  const pricing = data.documentPricing || quotationPricing(data.packageId, data.optionalPackage);
+  const selectedAddons = selectedQuotationAddons(data.selectedAddons);
+  const addonTotal = selectedAddons.reduce((sum, addon) => sum + (Number(addon.basePrice) || 0), 0);
   const line = (label, count, unit) => {
     const quantity = Number(count || 0);
     if (quantity <= 0) return '';
@@ -384,7 +492,7 @@ function quotationPdfMarkup({data, packageName, total, documentType = 'QUOTATION
   };
   const hasParticipants = [data.adults, data.children, data.infants, data.singleSupplement].some(value => Number(value || 0) > 0);
   const subtotal = hasParticipants
-    ? pricing.adult * Number(data.adults || 0) + pricing.child * Number(data.children || 0) + pricing.infant * Number(data.infants || 0) + pricing.solo * Number(data.singleSupplement || 0)
+    ? pricing.adult * Number(data.adults || 0) + pricing.child * Number(data.children || 0) + pricing.infant * Number(data.infants || 0) + pricing.solo * Number(data.singleSupplement || 0) + addonTotal
     : (Number(data.discount || 0) < 100 ? total / (1 - Number(data.discount || 0) / 100) : total);
   const issueDate = new Date(documentDate || Date.now());
   const displayedDate = Number.isNaN(issueDate.getTime()) ? '—' : new Intl.DateTimeFormat('en-GB').format(issueDate);
@@ -393,11 +501,14 @@ function quotationPdfMarkup({data, packageName, total, documentType = 'QUOTATION
     ? `<section class="bank-details" aria-label="Bank details"><div class="section-title">Bank details</div><dl><dt>Account no.</dt><dd class="bank-account-number">${escapeDocumentText(bankDetails.accountNumber)}</dd><dt>Bank</dt><dd>${escapeDocumentText(bankDetails.bankName)}</dd><dt>Account name</dt><dd>${escapeDocumentText(bankDetails.accountName)}</dd></dl></section>`
     : '';
 
-  return `<!doctype html><html><head><meta charset="UTF-8"><title>${escapeDocumentText(data.id || documentType)}</title><style>@page{size:210mm 297mm;margin:14mm}*{box-sizing:border-box}body{margin:0;padding:14mm;font-family:Arial,sans-serif;color:#24364a;font-size:12px}@media print{body{padding:0}}.sheet{width:100%;min-height:267mm}.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #18a889;padding-bottom:18px}.brand{display:flex;gap:10px;align-items:center}.logo{width:42px;height:42px;border-radius:12px;background:#18a889;color:#fff;display:grid;place-items:center;font-size:24px;font-weight:800}.company h1{margin:0;font-size:21px;color:#122238}.company p{margin:4px 0 0;color:#718096}.quote-meta{text-align:right}.quote-meta h2{margin:0 0 6px;color:#18a889;font-size:22px}.quote-meta p{margin:3px 0;color:#718096}.section{margin-top:24px}.section-title{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#18a889;margin-bottom:8px}.recipient{background:#f4faf8;border:1px solid #d9eee8;border-radius:8px;padding:13px;display:grid;grid-template-columns:120px 1fr;gap:6px}.recipient strong{color:#718096}.package{border:1px solid #dce5eb;border-radius:8px;padding:15px}.package h3{margin:0 0 5px;font-size:17px}.package p{margin:0;color:#718096}.package-notes{display:grid;grid-template-columns:1fr;gap:8px;margin-top:72px;width:65%;text-align:left}.package-note{padding:0}.package-note strong{display:block;color:#477466;margin-bottom:5px}.package-note ul{margin:0;padding-left:18px}.package-note li{margin:3px 0}.pricing{width:100%;border-collapse:collapse;margin-top:12px}.pricing th{background:#edf8f5;color:#477466;text-align:left;font-size:11px}.pricing th,.pricing td{padding:10px;border-bottom:1px solid #e7edf0}.pricing td:nth-child(2),.pricing td:nth-child(3),.pricing td:nth-child(4),.pricing th:nth-child(2),.pricing th:nth-child(3),.pricing th:nth-child(4){text-align:right}.invoice-summary{display:flex;justify-content:space-between;align-items:flex-start;gap:32px;margin-top:58px}.totals{margin:0 0 0 auto;width:280px;flex:0 0 280px}.totals div{display:flex;justify-content:space-between;padding:5px 0}.totals .grand{border-top:2px solid #18a889;margin-top:5px;padding-top:10px;font-size:17px;font-weight:800;color:#18a889}.bank-details{width:58%;margin:0;padding:14px;border:1px solid #d9eee8;border-left:3px solid #18a889;border-radius:8px;background:#f4faf8;text-align:left;break-inside:avoid;page-break-inside:avoid}.bank-details dl{display:grid;grid-template-columns:88px minmax(0,1fr);gap:7px 10px;margin:0;line-height:1.5}.bank-details dt{color:#718096}.bank-details dd{margin:0;font-weight:700;overflow-wrap:anywhere}.bank-account-number{font-variant-numeric:tabular-nums;letter-spacing:.03em}.footer{border-top:1px solid #dce5eb;margin-top:34px;padding-top:12px;color:#8492a3;text-align:center;font-size:10px}</style></head><body><main class="sheet"><header class="header"><div class="brand"><div class="logo">M</div><div class="company"><h1>Milas Travel &amp; Tours</h1><p>Sabah, Malaysia</p></div></div><div class="quote-meta"><h2>${documentType}</h2><p><strong>${escapeDocumentText(data.id || '—')}</strong></p><p>${displayedDate}</p>${quotationReference ? `<p>Quotation: ${escapeDocumentText(quotationReference)}</p>` : ''} </div></header><section class="section"><div class="section-title">Bill to</div><div class="recipient"><strong>Name</strong><span>${escapeDocumentText(data.customer || '—')}</span><strong>Phone</strong><span>${escapeDocumentText(data.phone || '—')}</span><strong>Email</strong><span>${escapeDocumentText(data.email || '—')}</span></div></section><section class="section"><div class="section-title">Package details</div><div class="package"><h3>${escapeDocumentText(packageName || '—')}</h3><p>Travel date: ${data.travelDate ? formatTravelDate(data.travelDate) : '—'}</p></div><table class="pricing"><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody>${line('Adult',data.adults,pricing.adult)}${line('Child',data.children,pricing.child)}${line('Infant',data.infants,pricing.infant)}${line('Single supplement',data.singleSupplement,pricing.solo)}${!hasParticipants ? `<tr><td>${escapeDocumentText(packageName || 'Package')}</td><td>1</td><td>RM ${subtotal.toFixed(2)}</td><td>RM ${subtotal.toFixed(2)}</td></tr>` : ''}</tbody></table>${packageNotes ? `<div class="package-notes">${packageNotes}</div>` : ''}<div class="invoice-summary">${bankDetailsMarkup}<div class="totals"><div><span>Subtotal</span><strong>RM ${Number(subtotal).toFixed(2)}</strong></div><div><span>Discount (${data.discount || 0}%)</span><strong>- RM ${discountAmount.toFixed(2)}</strong></div><div class="grand"><span>Total</span><span>RM ${Number(total || 0).toFixed(2)}</span></div></div></div>${data.notes ? `<div class="section"><div class="section-title">Notes</div><p style="white-space:pre-wrap">${escapeDocumentText(data.notes)}</p></div>` : ''} </section><footer class="footer">Thank you for choosing Milas Travel &amp; Tours · Sabah, Malaysia</footer></main></body></html>`;
+  const addonRows = selectedAddons.map(addon => `<tr><td>${escapeDocumentText(addon.name || 'Add-on')}</td><td>1</td><td>RM ${(Number(addon.basePrice) || 0).toFixed(2)}</td><td>RM ${(Number(addon.basePrice) || 0).toFixed(2)}</td></tr>`).join('');
+  return `<!doctype html><html><head><meta charset="UTF-8"><title>${escapeDocumentText(data.id || documentType)}</title><style>@page{size:210mm 297mm;margin:14mm}*{box-sizing:border-box}body{margin:0;padding:14mm;font-family:Arial,sans-serif;color:#24364a;font-size:12px}@media print{body{padding:0}}.sheet{width:100%;min-height:267mm}.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #18a889;padding-bottom:18px}.brand{display:flex;gap:10px;align-items:center}.logo{width:42px;height:42px;border-radius:12px;background:#18a889;color:#fff;display:grid;place-items:center;font-size:24px;font-weight:800}.company h1{margin:0;font-size:21px;color:#122238}.company p{margin:4px 0 0;color:#718096}.quote-meta{text-align:right}.quote-meta h2{margin:0 0 6px;color:#18a889;font-size:22px}.quote-meta p{margin:3px 0;color:#718096}.section{margin-top:24px}.section-title{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#18a889;margin-bottom:8px}.recipient{background:#f4faf8;border:1px solid #d9eee8;border-radius:8px;padding:13px;display:grid;grid-template-columns:120px 1fr;gap:6px}.recipient strong{color:#718096}.package{border:1px solid #dce5eb;border-radius:8px;padding:15px}.package h3{margin:0 0 5px;font-size:17px}.package p{margin:0;color:#718096}.package-notes{display:grid;grid-template-columns:1fr;gap:8px;margin-top:72px;width:65%;text-align:left}.package-note{padding:0}.package-note strong{display:block;color:#477466;margin-bottom:5px}.package-note ul{margin:0;padding-left:18px}.package-note li{margin:3px 0}.itinerary-notes{display:grid;gap:7px;margin-top:18px;width:65%;text-align:left;break-inside:avoid}.itinerary-notes>strong{color:#477466}.itinerary-day{display:grid;grid-template-columns:48px minmax(0,1fr);gap:8px}.itinerary-day b{color:#477466}.itinerary-day span{white-space:pre-wrap}.pricing{width:100%;border-collapse:collapse;margin-top:12px}.pricing th{background:#edf8f5;color:#477466;text-align:left;font-size:11px}.pricing th,.pricing td{padding:10px;border-bottom:1px solid #e7edf0}.pricing td:nth-child(2),.pricing td:nth-child(3),.pricing td:nth-child(4),.pricing th:nth-child(2),.pricing th:nth-child(3),.pricing th:nth-child(4){text-align:right}.invoice-summary{display:flex;justify-content:space-between;align-items:flex-start;gap:32px;margin-top:58px}.totals{margin:0 0 0 auto;width:280px;flex:0 0 280px}.totals div{display:flex;justify-content:space-between;padding:5px 0}.totals .grand{border-top:2px solid #18a889;margin-top:5px;padding-top:10px;font-size:17px;font-weight:800;color:#18a889}.bank-details{width:58%;margin:0;padding:14px;border:1px solid #d9eee8;border-left:3px solid #18a889;border-radius:8px;background:#f4faf8;text-align:left;break-inside:avoid;page-break-inside:avoid}.bank-details dl{display:grid;grid-template-columns:88px minmax(0,1fr);gap:7px 10px;margin:0;line-height:1.5}.bank-details dt{color:#718096}.bank-details dd{margin:0;font-weight:700;overflow-wrap:anywhere}.bank-account-number{font-variant-numeric:tabular-nums;letter-spacing:.03em}.footer{border-top:1px solid #dce5eb;margin-top:34px;padding-top:12px;color:#8492a3;text-align:center;font-size:10px}</style></head><body><main class="sheet"><header class="header"><div class="brand"><div class="logo">M</div><div class="company"><h1>Milas Travel &amp; Tours</h1><p>Sabah, Malaysia</p></div></div><div class="quote-meta"><h2>${documentType}</h2><p><strong>${escapeDocumentText(data.id || '—')}</strong></p><p>${displayedDate}</p>${quotationReference ? `<p>Quotation: ${escapeDocumentText(quotationReference)}</p>` : ''} </div></header><section class="section"><div class="section-title">Bill to</div><div class="recipient"><strong>Name</strong><span>${escapeDocumentText(data.customer || '—')}</span><strong>Phone</strong><span>${escapeDocumentText(data.phone || '—')}</span><strong>Email</strong><span>${escapeDocumentText(data.email || '—')}</span></div></section><section class="section"><div class="section-title">Package details</div><div class="package"><h3>${escapeDocumentText(packageName || '—')}</h3><p>Travel date: ${data.travelDate ? formatTravelDate(data.travelDate) : '—'}</p>${data.optionalPackage ? `<p>Optional package: ${escapeDocumentText(data.optionalPackage)}</p>` : ''}</div><table class="pricing"><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody>${line('Adult',data.adults,pricing.adult)}${line('Child',data.children,pricing.child)}${line('Infant',data.infants,pricing.infant)}${line('Single supplement',data.singleSupplement,pricing.solo)}${addonRows}${!hasParticipants && !selectedAddons.length ? `<tr><td>${escapeDocumentText(packageName || 'Package')}</td><td>1</td><td>RM ${subtotal.toFixed(2)}</td><td>RM ${subtotal.toFixed(2)}</td></tr>` : ''}</tbody></table>${packageNotes ? `<div class="package-notes">${packageNotes}</div>` : ''}${itineraryMarkup}<div class="invoice-summary">${bankDetailsMarkup}<div class="totals"><div><span>Subtotal</span><strong>RM ${Number(subtotal).toFixed(2)}</strong></div><div><span>Discount (${data.discount || 0}%)</span><strong>- RM ${discountAmount.toFixed(2)}</strong></div><div class="grand"><span>Total</span><span>RM ${Number(total || 0).toFixed(2)}</span></div></div></div>${data.notes ? `<div class="section"><div class="section-title">Notes</div><p style="white-space:pre-wrap">${escapeDocumentText(data.notes)}</p></div>` : ''} </section><footer class="footer">Thank you for choosing Milas Travel &amp; Tours · Sabah, Malaysia</footer></main></body></html>`;
 }
 function handleQuotationSubmit(event) {
   event.preventDefault();
-  const quotation = Object.fromEntries(new FormData(event.target).entries());
+  const formData = new FormData(event.target);
+  const quotation = combinePhoneField(Object.fromEntries(formData.entries()));
+  quotation.selectedAddons = formData.getAll('selectedAddons').map(value => { try { return JSON.parse(value); } catch { return null; } }).filter(Boolean);
   const packageSelect = event.target.querySelector('[data-quotation-package]');
   quotation.packageName = packageSelect?.selectedOptions[0]?.textContent || quotation.packageId || '';
   quotation.total = quotationTotal(event.target).toFixed(2);
@@ -688,12 +799,93 @@ function sortOngoingBookings(rows) {
     return aDate - bDate;
   });
 }
+function invoiceBookingFields(invoice, summary) {
+  const source = {...(invoice.quotationSnapshot || {}), ...invoice};
+  const packageName = source.packageName || 'Invoice';
+  return {
+    customer: source.customer || '',
+    phone: source.phone || '',
+    email: source.email || '',
+    nationality: source.nationality || '',
+    package: packageName,
+    optionalPackage: source.optionalPackage || '',
+    addOns: source.selectedAddons || [],
+    selectedAddons: source.selectedAddons || [],
+    adult: source.adults || '0',
+    children: source.children || '0',
+    infant: source.infants || '0',
+    singleSupplement: source.singleSupplement || '0',
+    sales: 'RM ' + summary.total.toFixed(2),
+    total: 'RM ' + summary.total.toFixed(2),
+    payment: summary.balance <= 0 ? 'Paid' : 'Pending',
+    paymentAmount: summary.paid.toFixed(2),
+    amountPayment: summary.paid.toFixed(2),
+    amountOutstanding: summary.balance.toFixed(2),
+    balancePayment: summary.balance.toFixed(2)
+  };
+}
+function reconcileInvoiceBookings(records) {
+  const invoices = storedInvoices();
+  const knownInvoiceIds = new Set(records.map(record => record.invoiceId || record.invoice).filter(Boolean));
+  let changed = false;
+  invoices.forEach(invoice => {
+    const summary = invoicePaymentState(invoice);
+    if (!invoice.id || summary.paid <= 0) return;
+    const existing = records.find(record => record.invoiceId === invoice.id || record.invoice === invoice.id);
+    if (existing) {
+      const fields = invoiceBookingFields(invoice, summary);
+      const fieldsChanged = Object.entries(fields).some(([key, value]) => JSON.stringify(existing[key]) !== JSON.stringify(value));
+      if (fieldsChanged) { Object.assign(existing, fields); changed = true; }
+      knownInvoiceIds.add(invoice.id);
+      return;
+    }
+    const packageName = invoice.packageName || invoice.quotationSnapshot?.packageName || 'Invoice';
+    records.unshift({
+      status: 'NEW ORDER',
+      name: packageName + ' — ' + invoice.id,
+      bookingDate: invoice.issuedAt ? new Intl.DateTimeFormat('en-GB').format(new Date(invoice.issuedAt)) : new Date().toLocaleDateString('en-GB'),
+      startDate: invoice.travelDate || '',
+      assignee: 'Afiq Milas',
+      channel: 'Quotation',
+      supplier: 'Pending',
+      type: 'Multi Day',
+      customer: invoice.customer || '',
+      phone: invoice.phone || '',
+      nationality: invoice.nationality || invoice.quotationSnapshot?.nationality || '',
+      package: packageName,
+      optionalPackage: invoice.optionalPackage || invoice.quotationSnapshot?.optionalPackage || '',
+      addOns: invoice.selectedAddons || invoice.quotationSnapshot?.selectedAddons || [],
+      selectedAddons: invoice.selectedAddons || invoice.quotationSnapshot?.selectedAddons || [],
+      adult: invoice.adults || '0',
+      children: invoice.children || '0',
+      infant: invoice.infants || '0',
+      singleSupplement: invoice.singleSupplement || '0',
+      sales: 'RM ' + summary.total.toFixed(2),
+      total: 'RM ' + summary.total.toFixed(2),
+      payment: summary.balance <= 0 ? 'Paid' : 'Pending',
+      paymentAmount: summary.paid.toFixed(2),
+      amountPayment: summary.paid.toFixed(2),
+      amountOutstanding: summary.balance.toFixed(2),
+      balancePayment: summary.balance.toFixed(2),
+      email: invoice.email || '',
+      orderId: nextBookingId(records),
+      proof: 'Attached',
+      invoice: invoice.id,
+      invoiceId: invoice.id,
+      commission: '5%'
+    });
+    knownInvoiceIds.add(invoice.id);
+    changed = true;
+  });
+  if (changed) persistSharedCollection('bookings', records);
+  return records;
+}
 function storedBookings() {
-  if (Array.isArray(sharedData.bookings)) return syncBookingStatuses(sharedData.bookings);
+  if (Array.isArray(sharedData.bookings)) return syncBookingStatuses(reconcileInvoiceBookings(sharedData.bookings));
   try {
     const records = JSON.parse(localStorage.getItem('milas-bookings') || 'null') || bookingSeed.map(record => ({...record}));
-    return syncBookingStatuses(records);
-  } catch { return syncBookingStatuses(bookingSeed.map(record => ({...record}))); }
+    return syncBookingStatuses(reconcileInvoiceBookings(records));
+  } catch { return syncBookingStatuses(reconcileInvoiceBookings(bookingSeed.map(record => ({...record})))); }
 }
 function bookingCount(records, status) {
   return records.filter(item => item.status === status).length.toLocaleString('en-US');
@@ -771,16 +963,21 @@ function bookingSources() {
 }
 
 function paymentStatuses() {
-  return ['Pending payment', 'Deposit paid', 'Partially paid', 'Paid', 'Overdue', 'Refunded'];
+  return ['Pending', 'Paid'];
+}
+function bookingPaymentStatus(record) {
+  const balance = Number(String(record?.balancePayment ?? '').replace(/[^0-9.-]/g, ''));
+  if (Number.isFinite(balance) && String(record?.balancePayment ?? '').trim() !== '') return balance <= 0 ? 'Paid' : 'Pending';
+  return /^(paid|full payment)/i.test(String(record?.payment || '')) ? 'Paid' : 'Pending';
 }
 
 function bookingSupplierMessage(record) {
-  return ['Booking request', 'Booking ID: ' + (record.orderId || '—'), 'Customer: ' + (record.customer || '—'), 'Package: ' + packageDisplay(record.package || record.name), 'Travel date: ' + formatTravelDate(record.startDate), 'Travellers: ' + (record.adult || '0') + ' adult, ' + (record.children || '0') + ' child', 'Sales amount: ' + (record.sales || '—'), 'Payment status: ' + (record.payment || '—')].join('\n');
+  return ['Booking request', 'Booking ID: ' + (record.orderId || '—'), 'Customer: ' + (record.customer || '—'), 'Package: ' + packageDisplay(record.package || record.name), 'Travel date: ' + formatTravelDate(record.startDate), 'Travellers: ' + (record.adult || '0') + ' adult, ' + (record.children || '0') + ' child', 'Sales amount: ' + (record.sales || '—'), 'Payment status: ' + bookingPaymentStatus(record)].join('\n');
 }
 
 function bookingSendModal(record) {
   const message = bookingSupplierMessage(record);
-  return '<div class="modal-backdrop" id="sendBookingModal"><form class="booking-modal send-booking-modal" id="sendBookingForm"><div class="modal-head"><div><span class="eyebrow">Booking ' + (record.orderId || '') + '</span><h2>Send to supplier</h2><p>Semak maklumat sebelum buka WhatsApp atau email.</p></div><button type="button" class="modal-close" data-close-send>×</button></div><div class="editor-grid"><label>Channel<select name="sendChannel"><option value="whatsapp">WhatsApp</option><option value="email">Email</option></select></label><label>Supplier contact<input name="supplierContact" placeholder="No. WhatsApp atau email supplier" required /></label><label class="full-width">Message<textarea name="message" rows="8" readonly>' + message + '</textarea></label></div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-send>Cancel</button><button type="submit" class="primary-btn">Open draft</button></div></form></div>';
+  return '<div class="modal-backdrop" id="sendBookingModal"><form class="booking-modal send-booking-modal" id="sendBookingForm"><div class="modal-head"><div><span class="eyebrow">Booking ' + (record.orderId || '') + '</span><h2>Send to supplier</h2><p>Semak maklumat sebelum buka WhatsApp atau email.</p></div><button type="button" class="modal-close" data-close-send>×</button></div><div class="editor-grid"><label>Channel<select name="sendChannel"><option value="whatsapp">WhatsApp</option><option value="email">Email</option></select></label>' + phoneFieldMarkup('contactPhone', 'Client phone', bookingPhone(record), true) + '<label>Supplier contact<input name="supplierContact" placeholder="No. WhatsApp atau email supplier" required /></label><label class="full-width">Message<textarea name="message" rows="8" readonly>' + message + '</textarea></label></div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-send>Cancel</button><button type="submit" class="primary-btn">Open draft</button></div></form></div>';
 }
 
 function bookingEditor(record = {}) {
@@ -833,9 +1030,16 @@ function updateBookingSales(form) {
   const salesField = form?.querySelector('[data-auto-sales]');
   if (salesField) salesField.value = bookingSalesAmount(form);
 }
+function isCompletedBooking(record) {
+  return String(record?.status || '').trim().toUpperCase() === 'COMPLETE';
+}
+function bookingSalesValue(record) {
+  return Number(String(record?.sales ?? record?.value ?? 0).replace(/[^0-9.-]/g, '') || 0);
+}
 
 function bookingEditor(record = {}) {
   record = {...record}; const isNew = !record.orderId; if (isNew) record.orderId = nextBookingId(storedBookings());
+  record.payment = bookingPaymentStatus(record);
   const fields = getBookingFields(), packages = storedTourPackages();
   const packageOptions = `<option value="">Pilih tour package...</option>${packages.map(item => `<option value="${item.id}" ${record.package===item.id||record.package===item.name?'selected':''}>${item.id} — ${item.name}</option>`).join('')}${record.package && !packages.some(item => item.id===record.package || item.name===record.package) ? `<option selected value="${record.package}">Existing — ${record.package}</option>` : ''}`;
   const fieldMarkup = fields.filter(([, , visible]) => visible !== false).map(([key,label]) => key === 'payment'
@@ -846,6 +1050,8 @@ function bookingEditor(record = {}) {
     ? '<label>Assignee<select name="assignee"><option value="">Pilih staff...</option>' + registeredStaff().map(staff => '<option value="' + staff + '" ' + (record.assignee===staff ? 'selected' : '') + '>' + staff + '</option>').join('') + '</select></label>'
     : key === 'startDate'
     ? '<label>Start date<input type="date" name="startDate" value="' + (/^\d{4}-\d{2}-\d{2}$/.test(record.startDate||'') ? record.startDate : '') + '" min="' + todayIso() + '" required /></label>'
+    : key === 'phone'
+    ? phoneFieldMarkup('phone', label, record.phone)
     : key === 'package'
     ? `<label>${label}<select name="package">${packageOptions}</select></label>`
     : key === 'sales'
@@ -864,8 +1070,14 @@ function allBookingsViewV3() {
   return `<section class="all-bookings"><div class="booking-toolbar"><div class="search-field">⌕ <input placeholder="Search bookings..." /></div><button class="view-control">▤ View: List</button><button class="view-control">▦ Group by: Status</button><button class="view-control">Filter</button><span class="toolbar-spacer"></span></div>${groups.map(status=>{const rows=records.filter(r=>r.status===status);return `<article class="booking-status-group ${status==='ON GOING'?'expanded':''}"><button class="status-group-heading"><span class="status-caret">${status==='ON GOING'?'⌄':'›'}</span><span class="booking-status ${status==='COMPLETE'?'complete':status==='CANCEL'?'cancel':status==='ON GOING'?'ongoing':status==='CONFIRMED'?'confirmed':'new-order'}"><b>●</b>${status}</span><span class="booking-count">${bookingCount(records, status)}</span><span class="status-actions">••• &nbsp;＋</span></button><div class="booking-grid-wrap"><table class="clickup-booking-table"><thead><tr>${['Name','Booking Date','Start date','Assignee','Channel Platform','Supplier Confirmation','Type','Customer','Package','Adult','Children','Sales Amount','Payment','Email','OrderID','Order Proof/Payment','Invoice','Comm 5%'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr data-edit-booking="${encodeURIComponent(JSON.stringify(r))}"><td><span class="booking-check">✓</span><strong>${r.name}</strong></td><td>${r.bookingDate}</td><td>${r.startDate}</td><td>${r.assignee}</td><td><span class="field-chip pink">${r.channel}</span></td><td><span class="field-chip ${r.supplier==='Confirm'?'green':'yellow'}">${r.supplier}</span></td><td><span class="field-chip blue">${r.type}</span></td><td>${r.customer||'—'}</td><td>${r.package||'—'}</td><td>${r.adult||'—'}</td><td>${r.children||'—'}</td><td>${r.sales||'—'}</td><td>${r.payment||'—'}</td><td>${r.email||'—'}</td><td>${r.orderId||'—'}</td><td class="clip">${r.proof||'⌕'}</td><td class="clip">${r.invoice||'⌕'}</td><td>${r.commission||'—'}</td></tr>`).join(''):`<tr><td colspan="18" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task" data-new-booking>＋ Add Task</button></div></article>`;}).join('')}</section>`;
 }
 
-const defaultBookingFields = [['orderId','Booking ID'],['name','Booking name'],['bookingDate','Booking date'],['startDate','Start date'],['assignee','Assignee'],['channel','Channel platform'],['supplier','Supplier confirmation'],['type','Type'],['customer','Customer'],['package','Package'],['adult','Adults'],['children','Children'],['infant','Infants'],['discount','Discount'],['sales','Sales amount'],['payment','Payment'],['email','Email'],['proof','Order proof / payment'],['invoice','Invoice'],['commission','Commission 5%']];
-function getBookingFields() { try { const fields = JSON.parse(localStorage.getItem('milas-booking-fields') || 'null') || defaultBookingFields.map(field => [...field]); const salesIndex = fields.findIndex(([key]) => key === 'sales'); if (!fields.some(([key]) => key === 'infant')) fields.splice(salesIndex >= 0 ? salesIndex : fields.length, 0, ['infant', 'Infants', true]); if (!fields.some(([key]) => key === 'discount') && !fields.some(([, label]) => /discount/i.test(label))) fields.splice(salesIndex >= 0 ? salesIndex : fields.length, 0, ['discount', 'Discount', true]); return fields; } catch { return defaultBookingFields.map(field => [...field]); } }
+const defaultBookingFields = [['orderId','Booking ID'],['name','Booking name'],['bookingDate','Booking date'],['startDate','Start date'],['assignee','Assignee'],['channel','Channel platform'],['supplier','Supplier confirmation'],['type','Type'],['customer','Customer'],['phone','Phone number'],['email','Email'],['nationality','Nationality'],['package','Package'],['optionalPackage','Optional package'],['addOns','Add-ons'],['adult','Adults'],['children','Children'],['infant','Infants'],['singleSupplement','Single supplement'],['discount','Discount'],['sales','Sales amount'],['payment','Status payment'],['paymentAmount','Amount payment'],['amountOutstanding','Amount outstanding'],['total','Total'],['proof','Order proof / payment'],['invoice','Invoice'],['commission','Commission 5%']];
+function getStoredBookingFields() { try { const fields = JSON.parse(localStorage.getItem('milas-booking-fields') || 'null') || defaultBookingFields.map(field => [...field]); const salesIndex = fields.findIndex(([key]) => key === 'sales'); const customerIndex = fields.findIndex(([key]) => key === 'customer'); if (!fields.some(([key]) => key === 'phone')) fields.splice(customerIndex >= 0 ? customerIndex + 1 : fields.length, 0, ['phone', 'Phone number', true]); if (!fields.some(([key]) => key === 'infant')) fields.splice(salesIndex >= 0 ? salesIndex : fields.length, 0, ['infant', 'Infants', true]); if (!fields.some(([key]) => key === 'discount') && !fields.some(([, label]) => /discount/i.test(label))) fields.splice(salesIndex >= 0 ? salesIndex : fields.length, 0, ['discount', 'Discount', true]); return fields; } catch { return defaultBookingFields.map(field => [...field]); } }
+function getBookingFields() {
+  const fields = getStoredBookingFields();
+  const requiredFields = [['nationality', 'Nationality'], ['optionalPackage', 'Optional package'], ['addOns', 'Add-ons'], ['singleSupplement', 'Single supplement'], ['paymentAmount', 'Amount payment'], ['amountOutstanding', 'Amount outstanding'], ['total', 'Total']];
+  requiredFields.forEach(([key, label]) => { if (!fields.some(([fieldKey]) => fieldKey === key)) fields.push([key, label, true]); });
+  return fields;
+}
 function saveBookingFields(fields) { localStorage.setItem('milas-booking-fields', JSON.stringify(fields)); }
 function fieldManager() {
   const fields = getBookingFields();
@@ -884,7 +1096,7 @@ function fieldManager() {
 
 function bookingSummaryTableLegacy(rows) {
   const headers = ['Booking ID','Customer Name','Package','Travel date','Booking status','Sales amount','Status payment',''];
-  return `<div class="booking-grid-wrap"><table class="booking-summary-table"><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td class="booking-id"><strong>${r.orderId||'—'}</strong></td><td>${r.customer||'—'}</td><td>${r.package||r.name}</td><td>${r.startDate||'—'}</td><td><span class="booking-status-cell ${r.status.toLowerCase().replaceAll(' ','-')}">${r.status}</span></td><td>${r.sales||'—'}</td><td><span class="payment-cell">${r.payment||'—'}</span></td><td><button class="open-booking" data-open-booking="${encodeURIComponent(JSON.stringify(r))}">Open <span>→</span></button></td></tr>`).join(''):`<tr><td colspan="8" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task">＋ Add Task</button></div>`;
+  return `<div class="booking-grid-wrap"><table class="booking-summary-table"><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td class="booking-id"><strong>${r.orderId||'—'}</strong></td><td>${r.customer||'—'}</td><td>${r.package||r.name}</td><td>${r.startDate||'—'}</td><td><span class="booking-status-cell ${r.status.toLowerCase().replaceAll(' ','-')}">${r.status}</span></td><td>${r.sales||'—'}</td><td><span class="payment-cell">${bookingPaymentStatus(r)}</span></td><td><button class="open-booking" data-open-booking="${encodeURIComponent(JSON.stringify(r))}">Open <span>→</span></button></td></tr>`).join(''):`<tr><td colspan="8" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task">＋ Add Task</button></div>`;
 }
 
 function bookingSummaryTable(rows) {
@@ -897,7 +1109,7 @@ function bookingSummaryTable(rows) {
 }
 function bookingSummaryTableBase(rows) {
   const headers = ['Booking ID','Customer Name','Package','Travel date','Booking status','Sales amount','Status payment',''];
-  return `<div class="booking-grid-wrap"><table class="booking-summary-table"><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td class="booking-id"><strong>${r.orderId||'—'}</strong></td><td>${r.customer||'—'}</td><td>${packageDisplay(r.package||r.name)}</td><td>${formatTravelDate(r.startDate)}</td><td><span class="booking-status-cell ${r.status.toLowerCase().replaceAll(' ','-')}">${r.status}</span></td><td>${r.sales||'—'}</td><td><span class="payment-cell">${r.payment||'—'}</span></td><td><button class="open-booking" data-open-booking="${encodeURIComponent(JSON.stringify(r))}">Open <span>→</span></button></td></tr>`).join(''):`<tr><td colspan="8" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task">＋ Add Task</button></div>`;
+  return `<div class="booking-grid-wrap"><table class="booking-summary-table"><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td class="booking-id"><strong>${r.orderId||'—'}</strong></td><td>${r.customer||'—'}</td><td>${packageDisplay(r.package||r.name)}</td><td>${formatTravelDate(r.startDate)}</td><td><span class="booking-status-cell ${r.status.toLowerCase().replaceAll(' ','-')}">${r.status}</span></td><td>${r.sales||'—'}</td><td><span class="payment-cell">${bookingPaymentStatus(r)}</span></td><td><button class="open-booking" data-open-booking="${encodeURIComponent(JSON.stringify(r))}">Open <span>→</span></button></td></tr>`).join(''):`<tr><td colspan="8" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task">＋ Add Task</button></div>`;
 }
 
 function bookingCards(rows) {
@@ -982,6 +1194,24 @@ const customerFields = [
 function escapeMarkup(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
 const countryDialCodes = Object.fromEntries('AD:+376 AE:+971 AF:+93 AG:+1268 AI:+1264 AL:+355 AM:+374 AO:+244 AQ:+672 AR:+54 AS:+1684 AT:+43 AU:+61 AW:+297 AX:+35818 AZ:+994 BA:+387 BB:+1246 BD:+880 BE:+32 BF:+226 BG:+359 BH:+973 BI:+257 BJ:+229 BL:+590 BM:+1441 BN:+673 BO:+591 BQ:+599 BR:+55 BS:+1242 BT:+975 BV:+47 BW:+267 BY:+375 BZ:+501 CA:+1 CC:+61 CD:+243 CF:+236 CG:+242 CH:+41 CI:+225 CK:+682 CL:+56 CM:+237 CN:+86 CO:+57 CR:+506 CU:+53 CV:+238 CW:+599 CX:+61 CY:+357 CZ:+420 DE:+49 DJ:+253 DK:+45 DM:+1767 DO:+1809 DZ:+213 EC:+593 EE:+372 EG:+20 EH:+212 ER:+291 ES:+34 ET:+251 FI:+358 FJ:+679 FK:+500 FM:+691 FO:+298 FR:+33 GA:+241 GB:+44 GD:+1473 GE:+995 GF:+594 GG:+44 GH:+233 GI:+350 GL:+299 GM:+220 GN:+224 GP:+590 GQ:+240 GR:+30 GS:+500 GT:+502 GU:+1671 GW:+245 GY:+592 HK:+852 HM:+672 HN:+504 HR:+385 HT:+509 HU:+36 ID:+62 IE:+353 IL:+972 IM:+44 IN:+91 IO:+246 IQ:+964 IR:+98 IS:+354 IT:+39 JE:+44 JM:+1876 JO:+962 JP:+81 KE:+254 KG:+996 KH:+855 KI:+686 KM:+269 KN:+1869 KP:+850 KR:+82 KW:+965 KY:+1345 KZ:+7 LA:+856 LB:+961 LC:+1758 LI:+423 LK:+94 LR:+231 LS:+266 LT:+370 LU:+352 LV:+371 LY:+218 MA:+212 MC:+377 MD:+373 ME:+382 MF:+590 MG:+261 MH:+692 MK:+389 ML:+223 MM:+95 MN:+976 MO:+853 MP:+1670 MQ:+596 MR:+222 MS:+1664 MT:+356 MU:+230 MV:+960 MW:+265 MX:+52 MY:+60 MZ:+258 NA:+264 NC:+687 NE:+227 NF:+672 NG:+234 NI:+505 NL:+31 NO:+47 NP:+977 NR:+674 NU:+683 NZ:+64 OM:+968 PA:+507 PE:+51 PF:+689 PG:+675 PH:+63 PK:+92 PL:+48 PM:+508 PN:+64 PR:+1787 PS:+970 PT:+351 PW:+680 PY:+595 QA:+974 RE:+262 RO:+40 RS:+381 RU:+7 RW:+250 SA:+966 SB:+677 SC:+248 SD:+249 SE:+46 SG:+65 SH:+290 SI:+386 SJ:+47 SK:+421 SL:+232 SM:+378 SN:+221 SO:+252 SR:+597 SS:+211 ST:+239 SV:+503 SX:+1721 SY:+963 SZ:+268 TC:+1649 TD:+235 TF:+262 TG:+228 TH:+66 TJ:+992 TK:+690 TL:+670 TM:+993 TN:+216 TO:+676 TR:+90 TT:+1868 TV:+688 TW:+886 TZ:+255 UA:+380 UG:+256 UM:+1 US:+1 UY:+598 UZ:+998 VA:+39 VC:+1784 VE:+58 VG:+1284 VI:+1340 VN:+84 VU:+678 WF:+681 WS:+685 YE:+967 YT:+262 ZA:+27 ZM:+260 ZW:+263 XK:+383'.split(' ').map(item => item.split(':')));
 const countryNames = new Intl.DisplayNames(['en'], { type: 'region' });
+function phoneValueParts(value, fallback = '+60') {
+  const compact = String(value || '').replace(/[^+0-9]/g, '');
+  const code = Object.values(countryDialCodes).sort((a, b) => b.length - a.length).find(item => compact.startsWith(item)) || fallback;
+  return { code, local: compact.replace(new RegExp('^' + code.replace('+', '')), '') };
+}
+function phoneCountryOptions(selected = '+60') {
+  return Object.entries(countryDialCodes).map(([code, dial]) => `<option value="${dial}" ${dial === selected ? 'selected' : ''}>${escapeMarkup(countryNames.of(code) || code)} ${dial}</option>`).join('');
+}
+function phoneFieldMarkup(fieldName, label, value = '', required = false) {
+  const parts = phoneValueParts(value);
+  return `<label>${label}<div class="phone-input-group"><select name="${fieldName}CountryCode" aria-label="Country calling code">${phoneCountryOptions(parts.code)}</select><input name="${fieldName}" type="tel" value="${escapeMarkup(parts.local)}" placeholder="12-345 6789" pattern="[0-9][0-9\\s().-]{5,17}" title="Masukkan nombor telefon tanpa kod negara" ${required ? 'required' : ''} /></div></label>`;
+}
+function combinePhoneField(data, fieldName = 'phone') {
+  const local = String(data[fieldName] || '').replace(/[^0-9]/g, '');
+  if (local) data[fieldName] = `${data[`${fieldName}CountryCode`] || '+60'} ${local}`;
+  delete data[`${fieldName}CountryCode`];
+  return data;
+}
 function nextCustomerId(customers) {
   const sequence = customers.map(customer => Number(String(customer.id || '').match(/(\d+)$/)?.[1])).filter(Number.isFinite);
   return `CUS-${String(Math.max(0, ...sequence) + 1).padStart(5, '0')}`;
@@ -1037,6 +1267,9 @@ function countryOptions(selected = '') {
   const options = codes.map(code => ({ code, name: names.of(code) || code })).filter(item => item.name).sort((a, b) => a.name.localeCompare(b.name));
   return `<option value="">Select nationality</option>${options.map(item => `<option value="${escapeMarkup(item.name)}" ${item.name === selected ? 'selected' : ''}>${escapeMarkup(item.name)}</option>`).join('')}`;
 }
+function nationalityFieldMarkup(value = '') {
+  return `<label>Nationality<select name="nationality">${countryOptions(value)}</select></label>`;
+}
 function customerEditor(record = {}) {
   const customer = {...record};
   if (!customer.id) customer.id = nextCustomerId(storedCustomers());
@@ -1044,7 +1277,7 @@ function customerEditor(record = {}) {
   const storedCode = customer.phoneCountryCode || Object.values(countryDialCodes).sort((a, b) => b.length - a.length).find(code => storedPhone.replace(/[^+0-9]/g, '').startsWith(code)) || '+60';
   const localPhone = storedPhone.replace(/[^0-9]/g, '').replace(new RegExp('^' + storedCode.replace('+', '')), '');
   const phoneField = `<label>Phone number<div class="phone-input-group"><select name="phoneCountryCode" aria-label="Country calling code">${Object.entries(countryDialCodes).map(([code, dial]) => `<option value="${dial}" ${dial === storedCode ? 'selected' : ''}>${escapeMarkup(countryNames.of(code) || code)} ${dial}</option>`).join('')}</select><input name="phone" type="tel" value="${escapeMarkup(localPhone)}" placeholder="12-345 6789" pattern="[0-9][0-9\\s().-]{5,17}" title="Masukkan nombor telefon tanpa kod negara" required /></div></label>`;
-  const input = ([key, label, type, required]) => key === 'nationality' ? `<label>${label}<select name="${key}">${countryOptions(customer[key] || '')}</select></label>` : key === 'phone' ? phoneField : `<label>${label}<input name="${key}" type="${type}" value="${escapeMarkup(customer[key] || '')}" ${required ? 'required' : ''} /></label>`;
+  const input = ([key, label, type, required]) => key === 'nationality' ? `<label>${label}<select name="${key}">${countryOptions(customer[key] || '')}</select></label>` : key === 'phone' ? phoneField : key === 'emergencyPhone' ? phoneFieldMarkup('emergencyPhone', label, customer.emergencyPhone) : `<label>${label}<input name="${key}" type="${type}" value="${escapeMarkup(customer[key] || '')}" ${required ? 'required' : ''} /></label>`;
   return `<div class="modal-backdrop" id="customerModal"><form class="booking-modal customer-modal" id="customerForm"><div class="modal-head"><div><span class="eyebrow">CRM / Customers</span><h2>${record.id ? 'Edit customer' : 'New customer'}</h2><p>Simpan profil lengkap customer untuk kegunaan quotation, invoice dan booking.</p></div><button type="button" class="modal-close" data-close-customer>×</button></div><div class="customer-form-content"><div class="send-section-title">CUSTOMER PROFILE</div><div class="editor-grid"><label>Customer ID<input name="id" value="${escapeMarkup(customer.id)}" readonly /></label>${customerFields.slice(0, 6).map(input).join('')}</div><div class="send-section-title">IDENTITY & CONTACT DETAILS</div><div class="editor-grid">${customerFields.slice(6).map(input).join('')}</div><label class="full-width">Notes<textarea name="notes" rows="4">${escapeMarkup(customer.notes || '')}</textarea></label></div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-customer>Cancel</button><button type="submit" class="primary-btn">Save customer</button></div></form></div>`;
 }
 function handleCustomerSubmit(event) {
@@ -1052,9 +1285,8 @@ function handleCustomerSubmit(event) {
   const form = event.target;
   if (!form.reportValidity()) return false;
   const data = Object.fromEntries(new FormData(form).entries());
-  const localPhone = String(data.phone || '').replace(/[^0-9]/g, '');
-  data.phone = `${data.phoneCountryCode || '+60'} ${localPhone}`;
-  delete data.phoneCountryCode;
+  combinePhoneField(data, 'phone');
+  combinePhoneField(data, 'emergencyPhone');
   const customers = storedCustomers();
   const originalId = form.dataset.originalCustomerId || data.id;
   const index = customers.findIndex(customer => customer.id === originalId);
@@ -1090,7 +1322,7 @@ function genericView(key) {
 
 function settingsView() { return `<section class="settings-grid"><article class="panel settings-nav"><h2>Configuration</h2><button class="setting-active">General settings <span>→</span></button><button>Lead sources <span>→</span></button><button>Package categories <span>→</span></button><button>Supplier types <span>→</span></button><button>Payment methods <span>→</span></button></article><article class="panel settings-content"><div class="panel-head"><div><h2>Users, roles & permissions</h2><p>Permission architecture berpusat — bukan hardcoded di UI.</p></div><button class="primary-btn">+ Invite user</button></div><div class="role-list"><div class="role-row"><div class="avatar teal">AM</div><section><strong>Afiq Milas</strong><small>Super Admin · Last active now</small></section><span class="role-pill">Super Admin</span><button class="icon-btn">•••</button></div><div class="role-row"><div class="avatar blue">SA</div><section><strong>Sarah Ahmad</strong><small>Sales Manager · Last active 12 min ago</small></section><span class="role-pill">Sales Manager</span><button class="icon-btn">•••</button></div><div class="role-row"><div class="avatar purple">RK</div><section><strong>Rizal Karim</strong><small>Operations · Last active yesterday</small></section><span class="role-pill">Operations</span><button class="icon-btn">•••</button></div></div><div class="permission-box"><strong>Permission matrix</strong><p>Roles inherit granular permissions seperti View Lead, Create Quotation, Record Payment dan View Reports.</p><div class="permission-chips"><span>View leads</span><span>Create quotation</span><span>Create booking</span><span>Record payment</span><span>View operations</span><span>View reports</span></div></div></article></section>`; }
 
-function render() { const v=views[state.active], todayCount=upcomingTodayCount(), pendingNewOrders=newOrderCount(), pendingNewLeads=newLeadCount(), dueFollowUps=followUpsDueCount(); document.querySelector('#app').innerHTML=`<div class="app-shell"><aside class="sidebar"><div class="brand"><span class="brand-mark">M</span><span><strong>Milas Travel</strong><small>Unified CRM</small></span></div><div class="workspace-select"><span class="workspace-dot"></span><span>Milas Travel & Tours</span><b>⌄</b></div><nav>${navGroups.map(g=>`<div class="nav-group"><small>${g.label}</small>${g.items.map(([id,label,icon])=>`<button class="nav-item ${state.active===id?'active':''}" data-nav="${id}"><i>${icon}</i>${label}${id==='leads'&&pendingNewLeads?`<em class="nav-count">${pendingNewLeads}</em>`:''}${id==='followups'&&dueFollowUps?`<em class="nav-count">${dueFollowUps}</em>`:''}${id==='outstanding'?'<em>3</em>':''}${id==='bookings'&&pendingNewOrders?`<em class="nav-count">${pendingNewOrders}</em>`:''}${id==='upcoming'&&todayCount?`<em class="nav-count">${todayCount}</em>`:''}</button>`).join('')}</div>`).join('')}</nav><div class="sidebar-footer"><button class="help-link">? <span>Help centre</span></button><div class="user-chip"><div class="avatar teal">AM</div><span><strong>Afiq Milas</strong><small>Super Admin</small></span><b>•••</b></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumbs"><span>${v.eyebrow}</span><b>/</b><strong>${v.title}</strong></div><div class="top-actions"><div class="global-search">⌕ <input id="globalSearch" placeholder="Search anything..." /><kbd>⌘ K</kbd></div><button class="icon-btn notification">♧<i></i></button><button class="mobile-menu">☰</button></div></header><div class="content"><div class="page-heading"><div><h1>${v.title}</h1><p>${v.subtitle}</p></div><div class="heading-actions">${state.active==='dashboard'?`<div class="range-select"><span>◷</span><select id="range"><option>Today</option><option>This Week</option><option selected>This Month</option><option>Custom Date</option></select></div>`:''}${v.action?`<button class="primary-btn" id="primaryAction">${v.action}</button>`:''}</div></div>${state.active==='dashboard'?dashboard():state.active==='settings'?settingsView():genericView(state.active)}</div></main></div><div id="toast" class="toast ${state.toast?'show':''}">${state.toast}</div>`; bind(); }
+function render() { const v=views[state.active], todayCount=upcomingTodayCount(), pendingNewOrders=newOrderCount(), pendingNewLeads=newLeadCount(), dueFollowUps=followUpsDueCount(); document.querySelector('#app').innerHTML=`<div class="app-shell"><aside class="sidebar"><div class="brand"><span class="brand-mark">M</span><span><strong>Milas Travel</strong><small>Unified CRM</small></span></div><div class="workspace-select"><span class="workspace-dot"></span><span>Milas Travel & Tours</span><b>⌄</b></div><nav>${navGroups.map(g=>`<div class="nav-group"><small>${g.label}</small>${g.items.map(([id,label,icon])=>`<button class="nav-item ${state.active===id?'active':''}" data-nav="${id}"><i>${icon}</i>${label}${id==='leads'&&pendingNewLeads?`<em class="nav-count">${pendingNewLeads}</em>`:''}${id==='followups'&&dueFollowUps?`<em class="nav-count">${dueFollowUps}</em>`:''}${id==='outstanding'?'<em>3</em>':''}${id==='bookings'&&pendingNewOrders?`<em class="nav-count">${pendingNewOrders}</em>`:''}${id==='upcoming'&&todayCount?`<em class="nav-count">${todayCount}</em>`:''}</button>`).join('')}</div>`).join('')}</nav><div class="sidebar-footer"><button class="help-link">? <span>Help centre</span></button><div class="user-chip"><div class="avatar teal">AM</div><span><strong>Afiq Milas</strong><small>Super Admin</small></span><b>•••</b></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumbs"><span>${v.eyebrow}</span><b>/</b><strong>${v.title}</strong></div><div class="top-actions"><div class="global-search">⌕ <input id="globalSearch" placeholder="Search anything..." /><kbd>⌘ K</kbd></div><button class="icon-btn notification">♧<i></i></button><button class="mobile-menu">☰</button></div></header><div class="content"><div class="page-heading"><div><h1>${v.title}</h1><p>${v.subtitle}</p></div><div class="heading-actions">${state.active==='dashboard'?`<div class="range-select"><span>◷</span><select id="range"><option ${state.range==='Today'?'selected':''}>Today</option><option ${state.range==='This Week'?'selected':''}>This Week</option><option ${state.range==='This Month'?'selected':''}>This Month</option><option ${state.range==='Custom Date'?'selected':''}>Custom Date</option></select></div>`:''}${v.action?`<button class="primary-btn" id="primaryAction">${v.action}</button>`:''}</div></div>${state.active==='dashboard'?dashboard():state.active==='settings'?settingsView():genericView(state.active)}</div></main></div><div id="toast" class="toast ${state.toast?'show':''}">${state.toast}</div>`; bind(); }
 
 function bind(){ document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{state.active=b.dataset.nav;state.toast='';render()}); document.querySelector('#primaryAction')?.addEventListener('click',()=>{state.toast='Foundation UI ready — workflow action akan disambung pada Milestone 2.';render();setTimeout(()=>{state.toast='';render()},3500)}); document.querySelector('#range')?.addEventListener('change',e=>{state.range=e.target.value;state.toast=`Dashboard ditapis: ${state.range}`;render();setTimeout(()=>{state.toast='';render()},2200)}); document.querySelector('#upcomingMonth')?.addEventListener('change',e=>{state.upcomingMonth=e.target.value;render()}); document.querySelector('#globalSearch')?.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.value){state.toast=`Carian global disediakan untuk: ${e.target.value}`;render()}}); if(state.active==='bookings' && !state.bookingSearch) document.querySelectorAll('.booking-status-group').forEach(group=>{group.classList.remove('expanded'); group.querySelector('.status-caret').textContent='›';}); }
 
@@ -1229,7 +1461,9 @@ document.addEventListener('click', (event) => {
   if (previewQuotation) {
     event.preventDefault();
     const form = document.querySelector('#quotationForm');
-    const data = Object.fromEntries(new FormData(form).entries());
+    const formData = new FormData(form);
+    const data = Object.fromEntries(formData.entries());
+    data.selectedAddons = formData.getAll('selectedAddons').map(value => { try { return JSON.parse(value); } catch { return null; } }).filter(Boolean);
     const packageName = form.querySelector('[data-quotation-package]')?.selectedOptions[0]?.textContent || '';
     document.body.insertAdjacentHTML('beforeend', quotationPreview(data, packageName, quotationTotal(form).toFixed(2)));
     return;
@@ -1264,7 +1498,7 @@ document.addEventListener('click', (event) => {
     event.preventDefault();
     const form = document.querySelector('#leadForm');
     if (!form || !form.reportValidity()) return;
-    const formData = Object.fromEntries(new FormData(form).entries());
+    const formData = combinePhoneField(Object.fromEntries(new FormData(form).entries()));
     const leads = storedLeads();
     const lead = leads.find(item => item.id === proceedQuotation.dataset.proceedQuotation);
     if (lead) {
@@ -1391,7 +1625,7 @@ document.addEventListener('submit', (event) => {
   }
   if (event.target.id !== 'sendBookingForm') return;
   event.preventDefault();
-  const form = event.target, data = Object.fromEntries(new FormData(form).entries()), contact = String(data.supplierContact || '').trim();
+  const form = event.target, data = combinePhoneField(Object.fromEntries(new FormData(form).entries()), 'contactPhone'), contact = String(data.supplierContact || '').trim();
   saveSupplierDraft(form);
   const encodedMessage = encodeURIComponent(data.message);
   const destination = data.sendChannel === 'whatsapp'
@@ -1456,7 +1690,19 @@ document.addEventListener('input', (event) => {
 
 document.addEventListener('change', (event) => {
   if (event.target.matches('#bookingForm select[name="package"]')) updateBookingSales(event.target.form);
-  if (event.target.matches('#quotationForm [data-quotation-package]')) updateQuotationTotal(event.target.form);
+  if (event.target.matches('#quotationForm .quotation-addon-multi input[name="selectedAddons"]')) {
+    const picker = event.target.closest('.quotation-addon-multi');
+    const selected = [...picker.querySelectorAll('input[name="selectedAddons"]:checked')].map(input => input.parentElement.textContent.trim().replace(/\s+RM\s+[\d,.]+$/, ''));
+    picker.querySelector('summary').textContent = selected.length ? selected.join(', ') : 'Pilih add-on';
+    updateQuotationTotal(event.target.form);
+  }
+  if (event.target.matches('#quotationForm [data-quotation-package]')) {
+    const form = event.target.form;
+    const slot = form.querySelector('.quotation-extras-slot');
+    if (slot) slot.innerHTML = quotationExtrasMarkup(event.target.value, {});
+    updateQuotationTotal(form);
+  }
+  if (event.target.matches('#quotationForm [name="optionalPackage"], #quotationForm [name="selectedAddons"]')) updateQuotationTotal(event.target.form);
 });
 
 document.addEventListener('click', (event) => {
@@ -1630,7 +1876,8 @@ document.addEventListener('submit', (event) => {
   if (event.target.id !== 'bookingForm') return;
   event.preventDefault();
   const form = event.target;
-  const record = Object.fromEntries(new FormData(form).entries());
+  const record = combinePhoneField(Object.fromEntries(new FormData(form).entries()));
+  record.status = String(record.status || '').trim().toUpperCase();
   const phoneField = getBookingFields().find(([key, label]) => /hp|phone|telefon/i.test(key + ' ' + label));
   if (phoneField && record[phoneField[0]]) record.noHp = record[phoneField[0]];
   const records = storedBookings();
@@ -1768,7 +2015,7 @@ function bookingSendModal(record) {
   const packageName = packageDisplay(record.package || record.name);
   const base = { packageName, bookingId: record.orderId || '', contactName: record.customer || '', contactPhone: bookingPhone(record), travelDate: record.startDate || '', nationality: record.nationality || '', adults: record.adult || '', kids: record.children || '', infant: record.infant || '', singleSupplement: record.singleSupplement || '', pickupLocation: record.pickupLocation || '', guestDetails: guestDetailsTemplate(record.guestDetails), notes: record.notes || '' };
   const initial = {...base, ...getSupplierDraft(base.bookingId)};
-  return '<div class="modal-backdrop" id="sendBookingModal"><form class="booking-modal send-booking-modal" id="sendBookingForm"><div class="modal-head"><div><span class="eyebrow">Booking ' + initial.bookingId + '</span><h2>Send to supplier</h2><p>Lengkapkan dan semak maklumat sebelum dihantar kepada supplier.</p></div><button type="button" class="modal-close" data-close-send>×</button></div><div class="send-request-fields"><div class="send-section-title">BOOKING REQUEST</div><div class="editor-grid"><label>Package Name<input name="packageName" value="' + initial.packageName + '" /></label><label>Booking ID<input name="bookingId" value="' + initial.bookingId + '" readonly /></label></div><div class="send-section-title">CONTACT DATA</div><div class="editor-grid"><label>Name<input name="contactName" value="' + initial.contactName + '" /></label><label>No hp<input name="contactPhone" value="' + initial.contactPhone + '" /></label></div><div class="send-section-title">BOOKING DETAILS</div><div class="editor-grid"><label>Date Travel<input type="date" name="travelDate" value="' + (/^\d{4}-\d{2}-\d{2}$/.test(initial.travelDate) ? initial.travelDate : '') + '" min="' + todayIso() + '" required /></label><label>Nationality<input name="nationality" value="' + initial.nationality + '" /></label><label>No of Adults<input type="number" min="0" name="adults" value="' + initial.adults + '" /></label><label>No of Kids<input type="number" min="0" name="kids" value="' + initial.kids + '" /></label><label>No of Infant<input type="number" min="0" name="infant" value="' + initial.infant + '" /></label><label>Single Supplement<input name="singleSupplement" value="' + initial.singleSupplement + '" /></label><label>Pick up Location<input name="pickupLocation" value="' + initial.pickupLocation + '" /></label><label class="full-width">Guest Details<textarea name="guestDetails" rows="3">' + initial.guestDetails + '</textarea></label><label class="full-width">Notes<textarea name="notes" rows="3">' + initial.notes + '</textarea></label></div><div class="send-section-title">DELIVERY</div><div class="editor-grid"><label>Channel<select name="sendChannel"><option value="whatsapp">WhatsApp</option><option value="email">Email</option></select></label><label>Supplier contact<input name="supplierContact" placeholder="No. WhatsApp atau email supplier" required /></label><label class="full-width">Message preview<textarea name="message" rows="12" readonly>' + bookingRequestMessage(initial) + '</textarea></label></div></div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-send>Cancel</button><button type="submit" class="primary-btn">Save &amp; Send</button></div></form></div>';
+  return '<div class="modal-backdrop" id="sendBookingModal"><form class="booking-modal send-booking-modal" id="sendBookingForm"><div class="modal-head"><div><span class="eyebrow">Booking ' + initial.bookingId + '</span><h2>Send to supplier</h2><p>Lengkapkan dan semak maklumat sebelum dihantar kepada supplier.</p></div><button type="button" class="modal-close" data-close-send>×</button></div><div class="send-request-fields"><div class="send-section-title">BOOKING REQUEST</div><div class="editor-grid"><label>Package Name<input name="packageName" value="' + initial.packageName + '" /></label><label>Booking ID<input name="bookingId" value="' + initial.bookingId + '" readonly /></label></div><div class="send-section-title">CONTACT DATA</div><div class="editor-grid"><label>Name<input name="contactName" value="' + initial.contactName + '" /></label>' + phoneFieldMarkup('contactPhone', 'Phone number', initial.contactPhone, true) + '</div><div class="send-section-title">BOOKING DETAILS</div><div class="editor-grid"><label>Date Travel<input type="date" name="travelDate" value="' + (/^\d{4}-\d{2}-\d{2}$/.test(initial.travelDate) ? initial.travelDate : '') + '" min="' + todayIso() + '" required /></label><label>Nationality<input name="nationality" value="' + initial.nationality + '" /></label><label>No of Adults<input type="number" min="0" name="adults" value="' + initial.adults + '" /></label><label>No of Kids<input type="number" min="0" name="kids" value="' + initial.kids + '" /></label><label>No of Infant<input type="number" min="0" name="infant" value="' + initial.infant + '" /></label><label>Single Supplement<input name="singleSupplement" value="' + initial.singleSupplement + '" /></label><label>Pick up Location<input name="pickupLocation" value="' + initial.pickupLocation + '" /></label><label class="full-width">Guest Details<textarea name="guestDetails" rows="3">' + initial.guestDetails + '</textarea></label><label class="full-width">Notes<textarea name="notes" rows="3">' + initial.notes + '</textarea></label></div><div class="send-section-title">DELIVERY</div><div class="editor-grid"><label>Channel<select name="sendChannel"><option value="whatsapp">WhatsApp</option><option value="email">Email</option></select></label><label>Supplier contact<input name="supplierContact" placeholder="No. WhatsApp atau email supplier" required /></label><label class="full-width">Message preview<textarea name="message" rows="12" readonly>' + bookingRequestMessage(initial) + '</textarea></label></div></div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-send>Cancel</button><button type="submit" class="primary-btn">Save &amp; Send</button></div></form></div>';
 }
 
 document.addEventListener('input', (event) => {
@@ -1783,3 +2030,120 @@ document.addEventListener('change', (event) => {
   const form = event.target.closest('#sendBookingForm');
   if (form) saveSupplierDraft(form);
 });
+
+function formFieldConfigs() {
+  try { return JSON.parse(localStorage.getItem('milas-form-field-configs') || '{}'); } catch { return {}; }
+}
+function saveFormFieldConfigs(configs) {
+  localStorage.setItem('milas-form-field-configs', JSON.stringify(configs));
+}
+function formFieldConfig(formId) {
+  const configs = formFieldConfigs();
+  return configs[formId] || {hidden: [], custom: []};
+}
+function formFieldRecord(form) {
+  const identifiers = ['id', 'orderId', 'productId', 'supplierId'];
+  const values = identifiers.map(key => [key, form.elements[key]?.value]).filter(([, value]) => value);
+  if (!values.length) return {};
+  const collections = ['milas-leads', 'milas-quotations', 'milas-invoices', 'milas-customers', 'milas-suppliers', 'milas-bookings', 'milas-tour-products'];
+  for (const collection of collections) {
+    try {
+      const records = JSON.parse(localStorage.getItem(collection) || 'null');
+      if (!Array.isArray(records)) continue;
+      const match = records.find(record => values.some(([key, value]) => String(record[key] || '') === String(value)));
+      if (match) return match;
+    } catch {}
+  }
+  return {};
+}
+function formFieldLabel(label) {
+  const copy = label.cloneNode(true);
+  copy.querySelectorAll('input,select,textarea,details,button').forEach(node => node.remove());
+  return copy.textContent.trim().replace(/\s+/g, ' ') || 'Custom field';
+}
+function enhanceFormFields(form) {
+  // Payment records use a fixed finance form; field customization is only for
+  // editable CRM forms and should not appear in the payment workflow.
+  if (!form?.id || form.id === 'fieldManager' || form.id === 'formFieldManager' || form.id === 'invoicePaymentForm') return;
+  const config = formFieldConfig(form.id);
+  const grid = form.querySelector('.editor-grid');
+  if (!grid) return;
+  const record = formFieldRecord(form);
+  config.custom.forEach(field => {
+    if (form.elements[field.key]) return;
+    const value = record[field.key] ?? '';
+    const escapedValue = escapeMarkup(Array.isArray(value) ? value.map(item => item.name || item).join(', ') : value);
+    const control = field.type === 'textarea'
+      ? `<textarea name="${escapeMarkup(field.key)}" rows="3">${escapedValue}</textarea>`
+      : `<input name="${escapeMarkup(field.key)}" type="${escapeMarkup(field.type || 'text')}" value="${escapedValue}" />`;
+    grid.insertAdjacentHTML('beforeend', `<label data-custom-field="${escapeMarkup(field.key)}">${escapeMarkup(field.label)}${control}</label>`);
+  });
+  form.querySelectorAll('label').forEach(label => {
+    const control = label.querySelector('[name]');
+    if (!control) return;
+    const hidden = config.hidden.includes(control.name);
+    label.hidden = hidden;
+    control.disabled = hidden;
+  });
+  const legacyButton = form.querySelector('[data-customize-fields]');
+  if (legacyButton) { legacyButton.removeAttribute('data-customize-fields'); legacyButton.setAttribute('data-customize-form', ''); }
+  if (!form.querySelector('[data-customize-form]')) {
+    const header = form.querySelector('.modal-head');
+    if (header) {
+      const actions = header.querySelector('.modal-head-actions') || header.appendChild(document.createElement('div'));
+      actions.classList.add('modal-head-actions');
+      actions.insertAdjacentHTML('afterbegin', '<button type="button" class="view-control" data-customize-form>⚙ Susun field</button>');
+    }
+  }
+}
+function formFieldManager(form) {
+  const config = formFieldConfig(form.id);
+  const fields = [...form.querySelectorAll('label')].map(label => {
+    const control = label.querySelector('[name]');
+    return control ? {key: control.name, label: formFieldLabel(label), custom: Boolean(label.dataset.customField)} : null;
+  }).filter(Boolean).filter((field, index, all) => all.findIndex(item => item.key === field.key) === index);
+  return `<div class="modal-backdrop" id="formFieldManager" data-form-id="${escapeMarkup(form.id)}"><section class="field-manager"><div class="modal-head"><div><span class="eyebrow">Form settings</span><h2>Susun field</h2><p>Tambah, sembunyi atau padam field untuk borang ini.</p></div><button type="button" class="modal-close" data-close-form-field-manager>×</button></div><div class="field-manager-list">${fields.map(field => `<div class="field-manager-row"><strong>${escapeMarkup(field.label)}</strong><small>${escapeMarkup(field.key)}</small><label class="field-toggle"><input type="checkbox" data-form-field-visible="${escapeMarkup(field.key)}" ${config.hidden.includes(field.key) ? '' : 'checked'} /> <span>${field.custom ? 'Show' : 'Show'}</span></label>${field.custom ? `<button type="button" class="field-move" data-delete-form-field="${escapeMarkup(field.key)}">Delete</button>` : ''}</div>`).join('')}</div><div class="add-field-row"><input data-form-field-label placeholder="Nama field baharu" /><select data-form-field-type><option value="text">Text</option><option value="number">Number</option><option value="date">Date</option><option value="textarea">Notes / Textarea</option></select><button type="button" class="ghost-btn" data-add-form-field>＋ Add field</button></div><div class="modal-actions"><button type="button" class="primary-btn" data-close-form-field-manager>Done</button></div></section></div>`;
+}
+function refreshFormFieldManager(formId) {
+  const form = document.getElementById(formId);
+  document.querySelector('#formFieldManager')?.remove();
+  if (form) document.body.insertAdjacentHTML('beforeend', formFieldManager(form));
+}
+document.addEventListener('click', event => {
+  const customize = event.target.closest('[data-customize-form]');
+  if (customize) {
+    const form = customize.closest('form');
+    if (form) { event.preventDefault(); document.querySelector('#formFieldManager')?.remove(); document.body.insertAdjacentHTML('beforeend', formFieldManager(form)); }
+    return;
+  }
+  if (event.target.closest('[data-close-form-field-manager]')) { document.querySelector('#formFieldManager')?.remove(); return; }
+  const add = event.target.closest('[data-add-form-field]');
+  if (add) {
+    const manager = add.closest('#formFieldManager'), formId = manager?.dataset.formId, label = manager?.querySelector('[data-form-field-label]')?.value.trim();
+    if (!formId || !label) return;
+    const configs = formFieldConfigs(), config = configs[formId] || {hidden: [], custom: []};
+    let key = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'custom_field';
+    while (config.custom.some(field => field.key === key)) key += '_1';
+    config.custom.push({key, label, type: manager.querySelector('[data-form-field-type]')?.value || 'text'});
+    configs[formId] = config; saveFormFieldConfigs(configs);
+    enhanceFormFields(document.getElementById(formId)); refreshFormFieldManager(formId); return;
+  }
+  const remove = event.target.closest('[data-delete-form-field]');
+  if (remove) {
+    const manager = remove.closest('#formFieldManager'), formId = manager?.dataset.formId, key = remove.dataset.deleteFormField;
+    const configs = formFieldConfigs(), config = configs[formId] || {hidden: [], custom: []};
+    config.custom = config.custom.filter(field => field.key !== key); config.hidden = config.hidden.filter(field => field !== key);
+    configs[formId] = config; saveFormFieldConfigs(configs); refreshFormFieldManager(formId);
+  }
+});
+document.addEventListener('change', event => {
+  const visible = event.target.closest('[data-form-field-visible]');
+  if (!visible) return;
+  const manager = visible.closest('#formFieldManager'), formId = manager?.dataset.formId, key = visible.dataset.formFieldVisible;
+  const configs = formFieldConfigs(), config = configs[formId] || {hidden: [], custom: []};
+  config.hidden = visible.checked ? config.hidden.filter(item => item !== key) : [...new Set([...config.hidden, key])];
+  configs[formId] = config; saveFormFieldConfigs(configs); enhanceFormFields(document.getElementById(formId));
+});
+const formFieldObserver = new MutationObserver(() => document.querySelectorAll('form.booking-modal').forEach(enhanceFormFields));
+formFieldObserver.observe(document.body, {childList: true, subtree: true});
+document.querySelectorAll('form.booking-modal').forEach(enhanceFormFields);
