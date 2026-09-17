@@ -34,7 +34,7 @@ const navGroups = [
   { label: 'Sales', items: [['quotations','Quotations','▤'],['invoices','Invoices','▧']] },
   { label: 'Bookings', items: [['bookings','All Bookings','▣'],['upcoming','Upcoming Travel','◫']] },
   { label: 'Catalogue', items: [['products','Tour Packages','◇']] },
-  { label: 'Finance & Ops', items: [['payments','Payment Records','₿'],['outstanding','Outstanding Payments','!'],['operations','Operations','⌂'],['suppliers','Suppliers','⬡'],['reports','Reports','⌘']] },
+  { label: 'Finance & Ops', items: [['payments','Payment Records','₿'],['outstanding','Outstanding Payments','!'],['suppliers','Suppliers','⬡'],['reports','Reports','⌘']] },
   { label: 'System', items: [['settings','Settings','⚙']] },
 ];
 
@@ -54,7 +54,7 @@ const views = {
   addons: { eyebrow: 'Catalogue', title: 'Add-ons', subtitle: 'Tambahan fleksibel untuk quotation dan booking.', action: '+ Add Add-on' },
   pricing: { eyebrow: 'Catalogue', title: 'Pricing', subtitle: 'Satu pricing engine untuk sales, manual dan website booking.', action: '+ New Price Rule' },
   payments: { eyebrow: 'Finance', title: 'Payment Records', subtitle: 'Jejak kutipan booking tanpa menjadi sistem accounting penuh.', action: '+ Record Payment' },
-  outstanding: { eyebrow: 'Finance', title: 'Outstanding Payments', subtitle: 'Baki bayaran yang memerlukan tindakan.', action: 'Send Reminder' },
+  outstanding: { eyebrow: 'Finance', title: 'Outstanding Payments', subtitle: 'Baki bayaran yang memerlukan tindakan.', action: '+ Record Payment' },
   operations: { eyebrow: 'Operations', title: 'Operations', subtitle: 'Booking confirmed muncul di sini untuk persediaan perjalanan.', action: '+ New Task' },
   suppliers: { eyebrow: 'Operations', title: 'Suppliers', subtitle: 'Rakan tour, transport dan guide dalam satu masterlist.', action: '+ Add Supplier' },
   reports: { eyebrow: 'Management', title: 'Reports', subtitle: 'Bezakan nilai booking, cash collected dan baki tertunggak.', action: 'Export Report' },
@@ -130,7 +130,7 @@ function storedLeads() {
     return Array.isArray(saved) ? saved.map(normaliseLead) : leadSeed.map(lead => ({...lead}));
   } catch { return leadSeed.map(lead => ({...lead})); }
 }
-const leadStatuses = ['New Lead', 'Contacted', 'Quotation Sent', 'Follow-up', 'Won', 'Lost'];
+const leadStatuses = ['New Lead', 'Contacted', 'Quotation Sent', 'Follow-up', 'Invoice Sent', 'Won', 'Lost'];
 const leadSources = ['WhatsApp', 'Website', 'Referral', 'Facebook', 'Instagram', 'Other'];
 function nextLeadId(leads) {
   const sequence = leads.map(lead => Number(String(lead.id || '').replace('LD-', ''))).filter(Number.isFinite);
@@ -246,6 +246,60 @@ function invoicePreview(data) {
   const printable = encodeURIComponent(JSON.stringify({data}));
   return `<div class="modal-backdrop" id="invoicePreviewModal"><article class="booking-modal quotation-preview"><div class="modal-head"><div><span class="eyebrow">Invoice preview</span><h2>${data.id || 'Invoice'}</h2><p>Invoice draft berjaya dijana daripada quotation.</p></div><button type="button" class="modal-close" data-close-invoice-preview>×</button></div><iframe class="quotation-a4-frame" title="A4 invoice preview" srcdoc="${previewDocument}"></iframe><div class="modal-actions"><button type="button" class="ghost-btn" data-close-invoice-preview>Back</button><button type="button" class="primary-btn" data-print-invoice="${printable}">Save as PDF</button></div></article></div>`;
 }
+function invoicePaymentState(invoice) {
+  const total = Number(String(invoice.total || '0').replace(/[^0-9.-]/g, '') || 0);
+  const history = Array.isArray(invoice.paymentHistory) ? invoice.paymentHistory : (Number(invoice.paymentAmount || 0) > 0 ? [{ amount: Number(invoice.paymentAmount), paymentType: invoice.paymentType || 'deposit', paidAt: invoice.paidAt }] : []);
+  const paid = history.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  return { total, history, paid: Math.min(total, paid), balance: Math.max(0, total - paid) };
+}
+function paymentFields(summary) {
+  return '<label>Invoice total<input name="invoiceTotal" value="RM ' + summary.total.toFixed(2) + '" readonly /></label><label>Payment type<select name="paymentType"><option value="deposit">Deposit</option><option value="full">Full payment</option></select></label><label>Jumlah payment<input name="paymentAmount" type="number" min="0.01" max="' + summary.balance.toFixed(2) + '" step="0.01" placeholder="0.00" required /></label><label>Payment sebelum ini<input name="previousPayment" value="RM ' + summary.paid.toFixed(2) + '" readonly /></label><label>Baki outstanding sebelum ini<input name="previousOutstanding" value="RM ' + summary.balance.toFixed(2) + '" readonly /></label><label>Baki terkini<input name="balancePayment" value="RM ' + summary.balance.toFixed(2) + '" readonly /></label>';
+}
+function invoicePaymentModal(invoice) {
+  const summary = invoicePaymentState(invoice);
+  const payload = encodeURIComponent(JSON.stringify(invoice));
+  return '<div class="modal-backdrop" id="invoicePaymentModal"><form class="booking-modal" id="invoicePaymentForm" data-invoice="' + payload + '" data-invoice-total="' + summary.total.toFixed(2) + '" data-previous-outstanding="' + summary.balance.toFixed(2) + '"><div class="modal-head"><div><span class="eyebrow">Invoice payment</span><h2>' + (invoice.id || 'Invoice') + '</h2><p>Rekod pembayaran dan baki invoice.</p></div><button type="button" class="modal-close" data-close-invoice-payment>×</button></div><div class="editor-grid">' + paymentFields(summary) + '</div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-invoice-payment>Cancel</button><button type="submit" class="primary-btn">Save payment</button></div></form></div>';
+}
+function recordPaymentModal() {
+  const invoices = storedInvoices().filter(invoice => invoicePaymentState(invoice).balance > 0);
+  const first = invoices[0];
+  const summary = invoicePaymentState(first || {});
+  const firstPayload = first ? encodeURIComponent(JSON.stringify(first)) : '';
+  const options = invoices.map(invoice => '<option value="' + encodeURIComponent(JSON.stringify(invoice)) + '">' + (invoice.id || 'Invoice') + ' — ' + (invoice.customer || 'Customer') + ' · RM ' + invoicePaymentState(invoice).balance.toFixed(2) + ' outstanding</option>').join('');
+  return '<div class="modal-backdrop" id="invoicePaymentModal"><form class="booking-modal" id="invoicePaymentForm" data-invoice="' + firstPayload + '" data-invoice-total="' + summary.total.toFixed(2) + '" data-previous-outstanding="' + summary.balance.toFixed(2) + '"><div class="modal-head"><div><span class="eyebrow">Record payment</span><h2>Invoice payment</h2><p>Pilih invoice dan rekod bayaran seterusnya.</p></div><button type="button" class="modal-close" data-close-invoice-payment>×</button></div><div class="editor-grid">' + (invoices.length ? '<label>Invoice<select name="invoiceId" data-payment-invoice>' + options + '</select></label>' + paymentFields(summary) : '<p class="empty-bookings">Tiada invoice outstanding untuk direkodkan.</p>') + '</div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-invoice-payment>Cancel</button>' + (invoices.length ? '<button type="submit" class="primary-btn">Save payment</button>' : '') + '</div></form></div>';
+}
+function updateInvoicePaymentSummary(form) {
+  const outstanding = Number(form.dataset.previousOutstanding || 0);
+  const type = form.querySelector('[name="paymentType"]')?.value;
+  const amountInput = form.querySelector('[name="paymentAmount"]');
+  const balanceInput = form.querySelector('[name="balancePayment"]');
+  if (!amountInput || !balanceInput) return;
+  if (type === 'full') {
+    amountInput.value = outstanding.toFixed(2);
+    amountInput.readOnly = true;
+  } else {
+    amountInput.readOnly = false;
+  }
+  const amount = Math.min(outstanding, Math.max(0, Number(amountInput.value || 0)));
+  balanceInput.value = 'RM ' + (outstanding - amount).toFixed(2);
+}
+function recordInvoicePayment(invoice, paymentType, paymentAmount) {
+  const invoices = storedInvoices(), current = invoices.find(item => item.id === invoice.id);
+  if (!current) return false;
+  const summary = invoicePaymentState(current), amount = Number(paymentAmount || 0);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > summary.balance || (paymentType === 'full' && amount !== summary.balance)) return false;
+  const paymentLabel = paymentType === 'full' ? 'Full payment' : 'Deposit paid';
+  const entry = { amount: Number(amount.toFixed(2)), paymentType, paymentLabel, paidAt: new Date().toISOString(), previousOutstanding: Number(summary.balance.toFixed(2)), balance: Number((summary.balance - amount).toFixed(2)) };
+  const history = [...summary.history, entry], newBalance = Math.max(0, summary.balance - amount);
+  Object.assign(current, { paymentType, paymentStatus: newBalance === 0 ? 'Full payment' : paymentLabel, paymentAmount: (summary.paid + amount).toFixed(2), balancePayment: newBalance.toFixed(2), paymentHistory: history, status: newBalance === 0 ? 'Paid' : paymentLabel, paidAt: entry.paidAt });
+  localStorage.setItem('milas-invoices', JSON.stringify(invoices));
+  const leads = storedLeads(), lead = leads.find(item => item.id === current.leadId || item.id === current.quotationSnapshot?.leadId);
+  if (lead) { lead.status = 'Won'; localStorage.setItem('milas-leads', JSON.stringify(leads)); }
+  const bookings = storedBookings(), booking = bookings.find(item => item.invoiceId === current.id);
+  if (booking) { booking.payment = paymentLabel + ' (RM ' + amount.toFixed(2) + ')'; booking.paymentAmount = current.paymentAmount; booking.balancePayment = newBalance.toFixed(2); persistSharedCollection('bookings', bookings); }
+  else { bookings.unshift({ status: 'NEW ORDER', name: (current.packageName || 'Invoice') + ' — ' + current.id, bookingDate: new Date().toLocaleDateString('en-GB'), startDate: current.travelDate || '', assignee: 'Afiq Milas', channel: 'Quotation', supplier: 'Pending', type: 'Multi Day', customer: current.customer || '', package: current.packageName || '', adult: current.adults || '0', children: current.children || '0', sales: 'RM ' + summary.total.toFixed(2), payment: paymentLabel + ' (RM ' + amount.toFixed(2) + ')', paymentAmount: current.paymentAmount, balancePayment: newBalance.toFixed(2), email: current.email || '', orderId: nextBookingId(bookings), proof: 'Attached', invoice: current.id, invoiceId: current.id, commission: '5%' }); persistSharedCollection('bookings', bookings); }
+  return true;
+}
 function addQuotationInvoiceButtons() {
   document.querySelectorAll('[data-whatsapp-quotation]').forEach(whatsappButton => {
     if (whatsappButton.parentElement.querySelector('[data-convert-invoice]')) return;
@@ -295,7 +349,7 @@ function quotationsView() {
 }
 function invoicesView() {
   const invoices = storedInvoices();
-  return `<article class="panel list-panel invoices-list"><div class="toolbar"><div class="search-field">⌕ <input placeholder="Search invoices..." /></div><button class="ghost-btn">Filter</button></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Quotation</th><th>Customer</th><th>Package</th><th>Travel date</th><th>Issued</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody>${invoices.length ? invoices.map(invoice => { const payload = encodeURIComponent(JSON.stringify({data: invoice})); return `<tr><td class="id-cell">${invoice.id || '—'}</td><td>${invoice.quotationId || '—'}</td><td><strong>${invoice.customer || '—'}</strong><small class="table-subtext">${invoice.email || invoice.phone || ''}</small></td><td>${invoice.packageName || '—'}</td><td>${formatTravelDate(invoice.travelDate)}</td><td>${invoice.issuedAt ? new Intl.DateTimeFormat('en-GB').format(new Date(invoice.issuedAt)) : '—'}</td><td>RM ${Number(String(invoice.total || '0').replace(/[^0-9.-]/g, '') || 0).toFixed(2)}</td><td><span class="status draft">${invoice.status || 'Draft'}</span></td><td><div class="quotation-row-actions"><button class="ghost-btn" data-open-invoice="${payload}">Open</button><button class="primary-btn quotation-pdf" data-print-invoice="${payload}">Save as PDF</button></div></td></tr>`; }).join('') : '<tr><td colspan="9" class="empty-cell">Belum ada invoice. Convert quotation untuk menjana invoice secara automatik.</td></tr>'}</tbody></table></div></article>`;
+  return `<article class="panel list-panel invoices-list"><div class="toolbar"><div class="search-field">⌕ <input placeholder="Search invoices..." /></div><button class="ghost-btn">Filter</button></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Quotation</th><th>Customer</th><th>Package</th><th>Travel date</th><th>Issued</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody>${invoices.length ? invoices.map(invoice => { const payload = encodeURIComponent(JSON.stringify({data: invoice})); return `<tr><td class="id-cell">${invoice.id || '—'}</td><td>${invoice.quotationId || '—'}</td><td><strong>${invoice.customer || '—'}</strong><small class="table-subtext">${invoice.email || invoice.phone || ''}</small></td><td>${invoice.packageName || '—'}</td><td>${formatTravelDate(invoice.travelDate)}</td><td>${invoice.issuedAt ? new Intl.DateTimeFormat('en-GB').format(new Date(invoice.issuedAt)) : '—'}</td><td>RM ${Number(String(invoice.total || '0').replace(/[^0-9.-]/g, '') || 0).toFixed(2)}</td><td><span class="status ${String(invoice.status || 'Draft').toLowerCase().replaceAll(' ', '-')}">${invoice.status || 'Draft'}</span></td><td><div class="quotation-row-actions"><button class="ghost-btn" data-open-invoice="${payload}">Open</button><button class="primary-btn quotation-pdf" data-print-invoice="${payload}">Save as PDF</button><button class="ghost-btn" data-invoice-payment="${payload}">Payment</button></div></td></tr>`; }).join('') : '<tr><td colspan="9" class="empty-cell">Belum ada invoice. Convert quotation untuk menjana invoice secara automatik.</td></tr>'}</tbody></table></div></article>`;
 }
 const quotationStatuses = ['Draft', 'Sent', 'Accepted', 'Rejected'];
 function quotationEditor(record = {}) {
@@ -336,10 +390,10 @@ function quotationPdfMarkup({data, packageName, total, documentType = 'QUOTATION
   const displayedDate = Number.isNaN(issueDate.getTime()) ? '—' : new Intl.DateTimeFormat('en-GB').format(issueDate);
   const discountAmount = Math.max(0, subtotal - Number(total || 0));
   const bankDetailsMarkup = documentType === 'INVOICE' && bankDetails?.bankName && bankDetails?.accountName && bankDetails?.accountNumber
-    ? `<section class="bank-details" aria-label="Bank details"><div class="section-title">Bank details</div><dl><dt>Bank</dt><dd>${escapeDocumentText(bankDetails.bankName)}</dd><dt>Account name</dt><dd>${escapeDocumentText(bankDetails.accountName)}</dd><dt>Account no.</dt><dd class="bank-account-number">${escapeDocumentText(bankDetails.accountNumber)}</dd></dl></section>`
+    ? `<section class="bank-details" aria-label="Bank details"><div class="section-title">Bank details</div><dl><dt>Account no.</dt><dd class="bank-account-number">${escapeDocumentText(bankDetails.accountNumber)}</dd><dt>Bank</dt><dd>${escapeDocumentText(bankDetails.bankName)}</dd><dt>Account name</dt><dd>${escapeDocumentText(bankDetails.accountName)}</dd></dl></section>`
     : '';
 
-  return `<!doctype html><html><head><meta charset="UTF-8"><title>${escapeDocumentText(data.id || documentType)}</title><style>@page{size:210mm 297mm;margin:14mm}*{box-sizing:border-box}body{margin:0;padding:14mm;font-family:Arial,sans-serif;color:#24364a;font-size:12px}@media print{body{padding:0}}.sheet{width:100%;min-height:267mm}.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #18a889;padding-bottom:18px}.brand{display:flex;gap:10px;align-items:center}.logo{width:42px;height:42px;border-radius:12px;background:#18a889;color:#fff;display:grid;place-items:center;font-size:24px;font-weight:800}.company h1{margin:0;font-size:21px;color:#122238}.company p{margin:4px 0 0;color:#718096}.quote-meta{text-align:right}.quote-meta h2{margin:0 0 6px;color:#18a889;font-size:22px}.quote-meta p{margin:3px 0;color:#718096}.section{margin-top:24px}.section-title{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#18a889;margin-bottom:8px}.recipient{background:#f4faf8;border:1px solid #d9eee8;border-radius:8px;padding:13px;display:grid;grid-template-columns:120px 1fr;gap:6px}.recipient strong{color:#718096}.package{border:1px solid #dce5eb;border-radius:8px;padding:15px}.package h3{margin:0 0 5px;font-size:17px}.package p{margin:0;color:#718096}.package-notes{display:grid;grid-template-columns:1fr;gap:8px;margin-top:72px;width:65%;text-align:left}.package-note{padding:0}.package-note strong{display:block;color:#477466;margin-bottom:5px}.package-note ul{margin:0;padding-left:18px}.package-note li{margin:3px 0}.pricing{width:100%;border-collapse:collapse;margin-top:12px}.pricing th{background:#edf8f5;color:#477466;text-align:left;font-size:11px}.pricing th,.pricing td{padding:10px;border-bottom:1px solid #e7edf0}.pricing td:nth-child(2),.pricing td:nth-child(3),.pricing td:nth-child(4),.pricing th:nth-child(2),.pricing th:nth-child(3),.pricing th:nth-child(4){text-align:right}.totals{margin:72px 0 0 auto;width:280px}.totals div{display:flex;justify-content:space-between;padding:5px 0}.totals .grand{border-top:2px solid #18a889;margin-top:5px;padding-top:10px;font-size:17px;font-weight:800;color:#18a889}.bank-details{width:58%;margin:58px 0 0 auto;padding:14px;border:1px solid #d9eee8;border-left:3px solid #18a889;border-radius:8px;background:#f4faf8;text-align:left;break-inside:avoid;page-break-inside:avoid}.bank-details dl{display:grid;grid-template-columns:88px minmax(0,1fr);gap:7px 10px;margin:0;line-height:1.5}.bank-details dt{color:#718096}.bank-details dd{margin:0;font-weight:700;overflow-wrap:anywhere}.bank-account-number{font-variant-numeric:tabular-nums;letter-spacing:.03em}.footer{border-top:1px solid #dce5eb;margin-top:34px;padding-top:12px;color:#8492a3;text-align:center;font-size:10px}</style></head><body><main class="sheet"><header class="header"><div class="brand"><div class="logo">M</div><div class="company"><h1>Milas Travel &amp; Tours</h1><p>Sabah, Malaysia</p></div></div><div class="quote-meta"><h2>${documentType}</h2><p><strong>${escapeDocumentText(data.id || '—')}</strong></p><p>${displayedDate}</p>${quotationReference ? `<p>Quotation: ${escapeDocumentText(quotationReference)}</p>` : ''} </div></header><section class="section"><div class="section-title">Bill to</div><div class="recipient"><strong>Name</strong><span>${escapeDocumentText(data.customer || '—')}</span><strong>Phone</strong><span>${escapeDocumentText(data.phone || '—')}</span><strong>Email</strong><span>${escapeDocumentText(data.email || '—')}</span></div></section><section class="section"><div class="section-title">Package details</div><div class="package"><h3>${escapeDocumentText(packageName || '—')}</h3><p>Travel date: ${data.travelDate ? formatTravelDate(data.travelDate) : '—'}</p></div><table class="pricing"><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody>${line('Adult',data.adults,pricing.adult)}${line('Child',data.children,pricing.child)}${line('Infant',data.infants,pricing.infant)}${line('Single supplement',data.singleSupplement,pricing.solo)}${!hasParticipants ? `<tr><td>${escapeDocumentText(packageName || 'Package')}</td><td>1</td><td>RM ${subtotal.toFixed(2)}</td><td>RM ${subtotal.toFixed(2)}</td></tr>` : ''}</tbody></table>${packageNotes ? `<div class="package-notes">${packageNotes}</div>` : ''}${bankDetailsMarkup}<div class="totals"><div><span>Subtotal</span><strong>RM ${Number(subtotal).toFixed(2)}</strong></div><div><span>Discount (${data.discount || 0}%)</span><strong>- RM ${discountAmount.toFixed(2)}</strong></div><div class="grand"><span>Total</span><span>RM ${Number(total || 0).toFixed(2)}</span></div></div>${data.notes ? `<div class="section"><div class="section-title">Notes</div><p style="white-space:pre-wrap">${escapeDocumentText(data.notes)}</p></div>` : ''} </section><footer class="footer">Thank you for choosing Milas Travel &amp; Tours · Sabah, Malaysia</footer></main></body></html>`;
+  return `<!doctype html><html><head><meta charset="UTF-8"><title>${escapeDocumentText(data.id || documentType)}</title><style>@page{size:210mm 297mm;margin:14mm}*{box-sizing:border-box}body{margin:0;padding:14mm;font-family:Arial,sans-serif;color:#24364a;font-size:12px}@media print{body{padding:0}}.sheet{width:100%;min-height:267mm}.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #18a889;padding-bottom:18px}.brand{display:flex;gap:10px;align-items:center}.logo{width:42px;height:42px;border-radius:12px;background:#18a889;color:#fff;display:grid;place-items:center;font-size:24px;font-weight:800}.company h1{margin:0;font-size:21px;color:#122238}.company p{margin:4px 0 0;color:#718096}.quote-meta{text-align:right}.quote-meta h2{margin:0 0 6px;color:#18a889;font-size:22px}.quote-meta p{margin:3px 0;color:#718096}.section{margin-top:24px}.section-title{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#18a889;margin-bottom:8px}.recipient{background:#f4faf8;border:1px solid #d9eee8;border-radius:8px;padding:13px;display:grid;grid-template-columns:120px 1fr;gap:6px}.recipient strong{color:#718096}.package{border:1px solid #dce5eb;border-radius:8px;padding:15px}.package h3{margin:0 0 5px;font-size:17px}.package p{margin:0;color:#718096}.package-notes{display:grid;grid-template-columns:1fr;gap:8px;margin-top:72px;width:65%;text-align:left}.package-note{padding:0}.package-note strong{display:block;color:#477466;margin-bottom:5px}.package-note ul{margin:0;padding-left:18px}.package-note li{margin:3px 0}.pricing{width:100%;border-collapse:collapse;margin-top:12px}.pricing th{background:#edf8f5;color:#477466;text-align:left;font-size:11px}.pricing th,.pricing td{padding:10px;border-bottom:1px solid #e7edf0}.pricing td:nth-child(2),.pricing td:nth-child(3),.pricing td:nth-child(4),.pricing th:nth-child(2),.pricing th:nth-child(3),.pricing th:nth-child(4){text-align:right}.invoice-summary{display:flex;justify-content:space-between;align-items:flex-start;gap:32px;margin-top:58px}.totals{margin:0 0 0 auto;width:280px;flex:0 0 280px}.totals div{display:flex;justify-content:space-between;padding:5px 0}.totals .grand{border-top:2px solid #18a889;margin-top:5px;padding-top:10px;font-size:17px;font-weight:800;color:#18a889}.bank-details{width:58%;margin:0;padding:14px;border:1px solid #d9eee8;border-left:3px solid #18a889;border-radius:8px;background:#f4faf8;text-align:left;break-inside:avoid;page-break-inside:avoid}.bank-details dl{display:grid;grid-template-columns:88px minmax(0,1fr);gap:7px 10px;margin:0;line-height:1.5}.bank-details dt{color:#718096}.bank-details dd{margin:0;font-weight:700;overflow-wrap:anywhere}.bank-account-number{font-variant-numeric:tabular-nums;letter-spacing:.03em}.footer{border-top:1px solid #dce5eb;margin-top:34px;padding-top:12px;color:#8492a3;text-align:center;font-size:10px}</style></head><body><main class="sheet"><header class="header"><div class="brand"><div class="logo">M</div><div class="company"><h1>Milas Travel &amp; Tours</h1><p>Sabah, Malaysia</p></div></div><div class="quote-meta"><h2>${documentType}</h2><p><strong>${escapeDocumentText(data.id || '—')}</strong></p><p>${displayedDate}</p>${quotationReference ? `<p>Quotation: ${escapeDocumentText(quotationReference)}</p>` : ''} </div></header><section class="section"><div class="section-title">Bill to</div><div class="recipient"><strong>Name</strong><span>${escapeDocumentText(data.customer || '—')}</span><strong>Phone</strong><span>${escapeDocumentText(data.phone || '—')}</span><strong>Email</strong><span>${escapeDocumentText(data.email || '—')}</span></div></section><section class="section"><div class="section-title">Package details</div><div class="package"><h3>${escapeDocumentText(packageName || '—')}</h3><p>Travel date: ${data.travelDate ? formatTravelDate(data.travelDate) : '—'}</p></div><table class="pricing"><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody>${line('Adult',data.adults,pricing.adult)}${line('Child',data.children,pricing.child)}${line('Infant',data.infants,pricing.infant)}${line('Single supplement',data.singleSupplement,pricing.solo)}${!hasParticipants ? `<tr><td>${escapeDocumentText(packageName || 'Package')}</td><td>1</td><td>RM ${subtotal.toFixed(2)}</td><td>RM ${subtotal.toFixed(2)}</td></tr>` : ''}</tbody></table>${packageNotes ? `<div class="package-notes">${packageNotes}</div>` : ''}<div class="invoice-summary">${bankDetailsMarkup}<div class="totals"><div><span>Subtotal</span><strong>RM ${Number(subtotal).toFixed(2)}</strong></div><div><span>Discount (${data.discount || 0}%)</span><strong>- RM ${discountAmount.toFixed(2)}</strong></div><div class="grand"><span>Total</span><span>RM ${Number(total || 0).toFixed(2)}</span></div></div></div>${data.notes ? `<div class="section"><div class="section-title">Notes</div><p style="white-space:pre-wrap">${escapeDocumentText(data.notes)}</p></div>` : ''} </section><footer class="footer">Thank you for choosing Milas Travel &amp; Tours · Sabah, Malaysia</footer></main></body></html>`;
 }
 function handleQuotationSubmit(event) {
   event.preventDefault();
@@ -362,6 +416,35 @@ function handleQuotationSubmit(event) {
 function tableView(key) {
   const v = views[key], data = moduleData[key] || moduleData.bookings;
   return `<article class="panel list-panel"><div class="toolbar"><div class="search-field">⌕ <input placeholder="Search ${v.title.toLowerCase()}..." /></div><select><option>All statuses</option><option>Active</option><option>Pending</option><option>Confirmed</option></select><button class="ghost-btn" data-action="filter">Filter</button></div><div class="table-wrap"><table><thead><tr>${data.heads.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${data.rows.map(row=>`<tr>${row.map((cell,i)=>`<td class="${i===0?'id-cell':''}">${i===row.length-1?`<span class="status ${cell.toLowerCase().replaceAll(' ','-')}">${cell}</span>`:cell}</td>`).join('')}</tr>`).join('')}</tbody></table></div></article>`;
+}
+function syncPaymentRecordsView() {
+  const payments = storedInvoices().flatMap(invoice => {
+    const summary = invoicePaymentState(invoice);
+    return summary.history.map((payment, index) => ({ invoice, payment, index }));
+  });
+  moduleData.payments.heads = ['Payment ID', 'Invoice', 'Customer', 'Date', 'Amount paid', 'Balance', 'Type', 'Status'];
+  moduleData.payments.rows = payments.map(({ invoice, payment }, index) => [
+    'PAY-' + String(index + 1).padStart(5, '0'),
+    invoice.id || '—',
+    invoice.customer || '—',
+    payment.paidAt ? new Intl.DateTimeFormat('en-GB').format(new Date(payment.paidAt)) : '—',
+    'RM ' + Number(payment.amount || 0).toFixed(2),
+    'RM ' + Number(payment.balance || 0).toFixed(2),
+    payment.paymentLabel || (payment.paymentType === 'full' ? 'Full payment' : 'Deposit paid'),
+    'Recorded'
+  ]);
+}
+function outstandingView() {
+  const invoices = storedInvoices().filter(invoice => invoicePaymentState(invoice).balance > 0);
+  const rows = invoices.map(invoice => {
+    const summary = invoicePaymentState(invoice);
+    const payload = encodeURIComponent(JSON.stringify({data: invoice}));
+    const phone = String(invoice.phone || '').replace(/[^0-9]/g, '');
+    const whatsapp = encodeURIComponent(JSON.stringify({phone, customer: invoice.customer || '', invoiceId: invoice.id || '', balance: summary.balance.toFixed(2)}));
+    const issued = invoice.issuedAt ? new Intl.DateTimeFormat('en-GB').format(new Date(invoice.issuedAt)) : '—';
+    return '<tr><td class="id-cell">' + (invoice.id || '—') + '</td><td><strong>' + (invoice.customer || '—') + '</strong><small class="table-subtext">' + (invoice.email || invoice.phone || '') + '</small></td><td>' + (invoice.packageName || '—') + '</td><td>RM ' + summary.total.toFixed(2) + '</td><td>RM ' + summary.paid.toFixed(2) + '</td><td>RM ' + summary.balance.toFixed(2) + '</td><td>' + issued + '</td><td><span class="status outstanding">Outstanding</span></td><td><div class="quotation-row-actions"><button class="primary-btn" data-invoice-payment="' + payload + '">Record Payment</button><button class="whatsapp-btn outstanding-whatsapp" data-whatsapp-outstanding="' + whatsapp + '" aria-label="WhatsApp ' + (invoice.customer || 'client') + ' untuk outstanding payment" title="Follow up outstanding payment" ' + (phone ? '' : 'disabled') + '><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2a9.8 9.8 0 0 0-8.5 14.7L2 22l5.5-1.4A10 10 0 1 0 12 2Zm0 2a8 8 0 0 1 6.9 12l-.5.8.7 2.6-2.7-.7-.8.5A8 8 0 1 1 12 4Zm-3.2 3.9c-.2 0-.5.1-.7.4-.2.3-.8.8-.8 2s.8 2.3.9 2.5c.1.2 1.6 2.6 4 3.5 2 .8 2.4.6 2.8.6.4-.1 1.3-.5 1.5-1 .2-.5.2-.9.1-1-.1-.1-.3-.2-.6-.3l-1.5-.7c-.2-.1-.4-.1-.6.1l-.6.8c-.2.2-.3.2-.6.1-.3-.1-1.1-.4-1.2-1.7-.1-.3 0-.4.1-.6l.4-.5c.2-.2.2-.4.1-.6l-.7-1.7c-.2-.5-.4-.5-.6-.5h-.2Z"/></svg></button></div></td></tr>';
+  }).join('');
+  return '<article class="panel list-panel outstanding-list"><div class="toolbar"><div class="search-field">⌕ <input placeholder="Search outstanding payments..." /></div><select><option>All outstanding</option><option>Deposit balance</option></select><button class="ghost-btn" data-action="filter">Filter</button></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Customer</th><th>Package</th><th>Invoice total</th><th>Paid</th><th>Outstanding</th><th>Issued</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="9" class="empty-cell">Tiada outstanding payment.</td></tr>') + '</tbody></table></div></article>';
 }
 
 const productStatuses = ['Draft', 'Semak', 'Approved', 'Live'];
@@ -484,7 +567,7 @@ function tourPackagesView() {
 
 function pipelineView() {
   const leads = storedLeads();
-  const stages = ['New Lead', 'Contacted', 'Quotation Sent', 'Follow-up', 'Won', 'Lost'];
+  const stages = ['New Lead', 'Contacted', 'Quotation Sent', 'Follow-up', 'Invoice Sent', 'Won', 'Lost'];
   return `<section class="pipeline-grid">${stages.map(status => { const stageLeads = leads.filter(lead => lead.status === status); return `<article class="pipeline-column"><div class="pipeline-title"><strong>${status}</strong><span>${stageLeads.length}</span></div>${stageLeads.length ? stageLeads.map(lead => `<div class="lead-card" role="button" tabindex="0" title="Open lead" data-open-lead="${encodeURIComponent(JSON.stringify(lead))}"><strong>${lead.customer || '—'}</strong><small>${lead.phone || lead.email || lead.source || '—'}</small><span>${lead.packageName || lead.value || '—'}</span></div>`).join('') : '<div class="empty-bookings">Tiada lead.</div>'}</article>`; }).join('')}</section>`;
 }
 
@@ -587,7 +670,7 @@ function syncBookingStatuses(records) {
   records.forEach(record => {
     if (record.status !== 'CONFIRMED') return false;
     const travelDate = parseBookingDate(record.startDate);
-    if (!travelDate || travelDate > new Date(today.getFullYear(), today.getMonth(), today.getDate())) return false;
+    if (!travelDate || travelDate.getFullYear() !== today.getFullYear() || travelDate.getMonth() !== today.getMonth()) return false;
     record.status = 'ON GOING';
     changed = true;
   });
@@ -884,8 +967,113 @@ function suppliersViewActive() {
   return `<article class="panel list-panel suppliers-list"><div class="toolbar"><div class="search-field">⌕ <input placeholder="Search suppliers..." /></div><select><option>All statuses</option><option>Active</option><option>Inactive</option></select><button class="ghost-btn">Filter</button></div><div class="table-wrap"><table><thead><tr><th>Supplier</th><th>Code</th><th>Type</th><th>Contact</th><th>Email</th><th>Coverage</th><th>Status</th><th></th></tr></thead><tbody>${suppliers.map(supplier => `<tr><td><strong>${supplier.name || '—'}</strong><small class="table-subtext">${supplier.id}</small></td><td>${supplier.code || '—'}</td><td>${supplier.type || '—'}</td><td>${supplier.contact || '—'}</td><td>${supplier.email || '—'}</td><td>${supplier.coverage || '—'}</td><td><span class="status ${supplier.status === 'Inactive' ? 'inactive' : 'active'}">${supplier.status || 'Active'}</span></td><td><button class="ghost-btn supplier-open" data-open-supplier="${encodeURIComponent(JSON.stringify(supplier))}">Open</button></td></tr>`).join('')}</tbody></table></div></article>`;
 }
 
+const customerFields = [
+  ['fullName', 'Full name', 'text', true],
+  ['phone', 'Phone number', 'tel', true],
+  ['email', 'Email', 'email', false],
+  ['nationality', 'Nationality', 'text', false],
+  ['passportNo', 'Passport / ID number', 'text', false],
+  ['passportExpiry', 'Passport expiry', 'date', false],
+  ['dateOfBirth', 'Date of birth', 'date', false],
+  ['company', 'Company / organisation', 'text', false],
+  ['emergencyName', 'Emergency contact name', 'text', false],
+  ['emergencyPhone', 'Emergency contact phone', 'tel', false],
+];
+function escapeMarkup(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
+const countryDialCodes = Object.fromEntries('AD:+376 AE:+971 AF:+93 AG:+1268 AI:+1264 AL:+355 AM:+374 AO:+244 AQ:+672 AR:+54 AS:+1684 AT:+43 AU:+61 AW:+297 AX:+35818 AZ:+994 BA:+387 BB:+1246 BD:+880 BE:+32 BF:+226 BG:+359 BH:+973 BI:+257 BJ:+229 BL:+590 BM:+1441 BN:+673 BO:+591 BQ:+599 BR:+55 BS:+1242 BT:+975 BV:+47 BW:+267 BY:+375 BZ:+501 CA:+1 CC:+61 CD:+243 CF:+236 CG:+242 CH:+41 CI:+225 CK:+682 CL:+56 CM:+237 CN:+86 CO:+57 CR:+506 CU:+53 CV:+238 CW:+599 CX:+61 CY:+357 CZ:+420 DE:+49 DJ:+253 DK:+45 DM:+1767 DO:+1809 DZ:+213 EC:+593 EE:+372 EG:+20 EH:+212 ER:+291 ES:+34 ET:+251 FI:+358 FJ:+679 FK:+500 FM:+691 FO:+298 FR:+33 GA:+241 GB:+44 GD:+1473 GE:+995 GF:+594 GG:+44 GH:+233 GI:+350 GL:+299 GM:+220 GN:+224 GP:+590 GQ:+240 GR:+30 GS:+500 GT:+502 GU:+1671 GW:+245 GY:+592 HK:+852 HM:+672 HN:+504 HR:+385 HT:+509 HU:+36 ID:+62 IE:+353 IL:+972 IM:+44 IN:+91 IO:+246 IQ:+964 IR:+98 IS:+354 IT:+39 JE:+44 JM:+1876 JO:+962 JP:+81 KE:+254 KG:+996 KH:+855 KI:+686 KM:+269 KN:+1869 KP:+850 KR:+82 KW:+965 KY:+1345 KZ:+7 LA:+856 LB:+961 LC:+1758 LI:+423 LK:+94 LR:+231 LS:+266 LT:+370 LU:+352 LV:+371 LY:+218 MA:+212 MC:+377 MD:+373 ME:+382 MF:+590 MG:+261 MH:+692 MK:+389 ML:+223 MM:+95 MN:+976 MO:+853 MP:+1670 MQ:+596 MR:+222 MS:+1664 MT:+356 MU:+230 MV:+960 MW:+265 MX:+52 MY:+60 MZ:+258 NA:+264 NC:+687 NE:+227 NF:+672 NG:+234 NI:+505 NL:+31 NO:+47 NP:+977 NR:+674 NU:+683 NZ:+64 OM:+968 PA:+507 PE:+51 PF:+689 PG:+675 PH:+63 PK:+92 PL:+48 PM:+508 PN:+64 PR:+1787 PS:+970 PT:+351 PW:+680 PY:+595 QA:+974 RE:+262 RO:+40 RS:+381 RU:+7 RW:+250 SA:+966 SB:+677 SC:+248 SD:+249 SE:+46 SG:+65 SH:+290 SI:+386 SJ:+47 SK:+421 SL:+232 SM:+378 SN:+221 SO:+252 SR:+597 SS:+211 ST:+239 SV:+503 SX:+1721 SY:+963 SZ:+268 TC:+1649 TD:+235 TF:+262 TG:+228 TH:+66 TJ:+992 TK:+690 TL:+670 TM:+993 TN:+216 TO:+676 TR:+90 TT:+1868 TV:+688 TW:+886 TZ:+255 UA:+380 UG:+256 UM:+1 US:+1 UY:+598 UZ:+998 VA:+39 VC:+1784 VE:+58 VG:+1284 VI:+1340 VN:+84 VU:+678 WF:+681 WS:+685 YE:+967 YT:+262 ZA:+27 ZM:+260 ZW:+263 XK:+383'.split(' ').map(item => item.split(':')));
+const countryNames = new Intl.DisplayNames(['en'], { type: 'region' });
+function nextCustomerId(customers) {
+  const sequence = customers.map(customer => Number(String(customer.id || '').match(/(\d+)$/)?.[1])).filter(Number.isFinite);
+  return `CUS-${String(Math.max(0, ...sequence) + 1).padStart(5, '0')}`;
+}
+function customerFromRecord(record, existing = {}) {
+  return {
+    ...existing,
+    fullName: existing.fullName || record.customer || record.name || '',
+    phone: existing.phone || record.phone || record.contactPhone || record.whatsapp || '',
+    whatsapp: existing.whatsapp || record.whatsapp || record.phone || record.contactPhone || '',
+    email: existing.email || record.email || '',
+    nationality: existing.nationality || record.nationality || '',
+  };
+}
+function storedCustomers() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('milas-customers') || 'null');
+    if (Array.isArray(saved)) return saved;
+  } catch {}
+  const sources = [
+    ...storedLeads(),
+    ...storedQuotations(),
+    ...storedInvoices(),
+    ...storedBookings(),
+  ];
+  const customers = [];
+  sources.forEach(record => {
+    const name = String(record.customer || record.name || '').trim();
+    if (!name || name.includes('—')) return;
+    const key = name.toLowerCase();
+    const existing = customers.find(customer => customer.fullName.toLowerCase() === key);
+    if (existing) Object.assign(existing, customerFromRecord(record, existing));
+    else customers.push({...customerFromRecord(record), id: `CUS-${String(customers.length + 1).padStart(5, '0')}`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()});
+  });
+  localStorage.setItem('milas-customers', JSON.stringify(customers));
+  return customers;
+}
+function customerMetrics(customer) {
+  const name = String(customer.fullName || '').trim().toLowerCase();
+  const bookings = storedBookings().filter(record => String(record.customer || '').trim().toLowerCase() === name);
+  const invoices = storedInvoices().filter(invoice => String(invoice.customer || '').trim().toLowerCase() === name);
+  const balance = invoices.reduce((sum, invoice) => sum + invoicePaymentState(invoice).balance, 0);
+  return { bookings: bookings.length, balance };
+}
+function customerView() {
+  const customers = storedCustomers();
+  return `<article class="panel list-panel customers-list"><div class="toolbar"><div class="search-field">⌕ <input placeholder="Search customers..." /></div><button class="ghost-btn" data-action="filter">Filter</button></div><div class="table-wrap"><table><thead><tr><th>Customer ID</th><th>Customer</th><th>Phone number</th><th>Email</th><th>Nationality</th><th>Bookings</th><th>Outstanding</th><th></th></tr></thead><tbody>${customers.length ? customers.map(customer => { const metrics = customerMetrics(customer); return `<tr><td class="id-cell">${escapeMarkup(customer.id)}</td><td><strong>${escapeMarkup(customer.fullName || '—')}</strong><small class="table-subtext">${escapeMarkup(customer.company || '')}</small></td><td>${escapeMarkup(customer.phone || '—')}</td><td>${escapeMarkup(customer.email || '—')}</td><td>${escapeMarkup(customer.nationality || '—')}</td><td>${metrics.bookings}</td><td>RM ${metrics.balance.toFixed(2)}</td><td><button class="ghost-btn customer-open" data-open-customer="${encodeURIComponent(JSON.stringify(customer))}">Open</button></td></tr>`; }).join('') : '<tr><td colspan="8" class="empty-cell">Tiada customer. Tekan + New Customer untuk menambah rekod.</td></tr>'}</tbody></table></div></article>`;
+}
+function countryOptions(selected = '') {
+  const countryCodes = 'AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW XK'.split(' ');
+  const names = new Intl.DisplayNames(['en'], { type: 'region' });
+  const codes = countryCodes;
+  const options = codes.map(code => ({ code, name: names.of(code) || code })).filter(item => item.name).sort((a, b) => a.name.localeCompare(b.name));
+  return `<option value="">Select nationality</option>${options.map(item => `<option value="${escapeMarkup(item.name)}" ${item.name === selected ? 'selected' : ''}>${escapeMarkup(item.name)}</option>`).join('')}`;
+}
+function customerEditor(record = {}) {
+  const customer = {...record};
+  if (!customer.id) customer.id = nextCustomerId(storedCustomers());
+  const storedPhone = String(customer.phone || '');
+  const storedCode = customer.phoneCountryCode || Object.values(countryDialCodes).sort((a, b) => b.length - a.length).find(code => storedPhone.replace(/[^+0-9]/g, '').startsWith(code)) || '+60';
+  const localPhone = storedPhone.replace(/[^0-9]/g, '').replace(new RegExp('^' + storedCode.replace('+', '')), '');
+  const phoneField = `<label>Phone number<div class="phone-input-group"><select name="phoneCountryCode" aria-label="Country calling code">${Object.entries(countryDialCodes).map(([code, dial]) => `<option value="${dial}" ${dial === storedCode ? 'selected' : ''}>${escapeMarkup(countryNames.of(code) || code)} ${dial}</option>`).join('')}</select><input name="phone" type="tel" value="${escapeMarkup(localPhone)}" placeholder="12-345 6789" pattern="[0-9][0-9\\s().-]{5,17}" title="Masukkan nombor telefon tanpa kod negara" required /></div></label>`;
+  const input = ([key, label, type, required]) => key === 'nationality' ? `<label>${label}<select name="${key}">${countryOptions(customer[key] || '')}</select></label>` : key === 'phone' ? phoneField : `<label>${label}<input name="${key}" type="${type}" value="${escapeMarkup(customer[key] || '')}" ${required ? 'required' : ''} /></label>`;
+  return `<div class="modal-backdrop" id="customerModal"><form class="booking-modal customer-modal" id="customerForm"><div class="modal-head"><div><span class="eyebrow">CRM / Customers</span><h2>${record.id ? 'Edit customer' : 'New customer'}</h2><p>Simpan profil lengkap customer untuk kegunaan quotation, invoice dan booking.</p></div><button type="button" class="modal-close" data-close-customer>×</button></div><div class="customer-form-content"><div class="send-section-title">CUSTOMER PROFILE</div><div class="editor-grid"><label>Customer ID<input name="id" value="${escapeMarkup(customer.id)}" readonly /></label>${customerFields.slice(0, 6).map(input).join('')}</div><div class="send-section-title">IDENTITY & CONTACT DETAILS</div><div class="editor-grid">${customerFields.slice(6).map(input).join('')}</div><label class="full-width">Notes<textarea name="notes" rows="4">${escapeMarkup(customer.notes || '')}</textarea></label></div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-customer>Cancel</button><button type="submit" class="primary-btn">Save customer</button></div></form></div>`;
+}
+function handleCustomerSubmit(event) {
+  event.preventDefault();
+  const form = event.target;
+  if (!form.reportValidity()) return false;
+  const data = Object.fromEntries(new FormData(form).entries());
+  const localPhone = String(data.phone || '').replace(/[^0-9]/g, '');
+  data.phone = `${data.phoneCountryCode || '+60'} ${localPhone}`;
+  delete data.phoneCountryCode;
+  const customers = storedCustomers();
+  const originalId = form.dataset.originalCustomerId || data.id;
+  const index = customers.findIndex(customer => customer.id === originalId);
+  const previous = index >= 0 ? customers[index] : {};
+  const customer = {...previous, ...data, updatedAt: new Date().toISOString()};
+  if (!customer.createdAt) customer.createdAt = customer.updatedAt;
+  if (index >= 0) customers[index] = customer; else customers.unshift(customer);
+  localStorage.setItem('milas-customers', JSON.stringify(customers));
+  document.querySelector('#customerModal')?.remove();
+  state.active = 'customers';
+  state.toast = 'Customer berjaya disimpan.';
+  render();
+  setTimeout(() => { state.toast = ''; render(); }, 2200);
+  return false;
+}
+
 function genericView(key) {
   if (key === 'leads') return leadsView();
+  if (key === 'customers') return customerView();
   if (key === 'products') return tourPackagesViewGrouped();
   if (key === 'bookings') return allBookingsViewV4();
   if (key === 'pipeline') return pipelineView();
@@ -895,6 +1083,8 @@ function genericView(key) {
   if (key === 'upcoming') return upcomingView();
   if (key === 'reports') return reportsView();
   if (key === 'suppliers') return suppliersViewActive();
+  if (key === 'payments') { syncPaymentRecordsView(); return tableView(key); }
+  if (key === 'outstanding') return outstandingView();
   return tableView(key);
 }
 
@@ -903,6 +1093,32 @@ function settingsView() { return `<section class="settings-grid"><article class=
 function render() { const v=views[state.active], todayCount=upcomingTodayCount(), pendingNewOrders=newOrderCount(), pendingNewLeads=newLeadCount(), dueFollowUps=followUpsDueCount(); document.querySelector('#app').innerHTML=`<div class="app-shell"><aside class="sidebar"><div class="brand"><span class="brand-mark">M</span><span><strong>Milas Travel</strong><small>Unified CRM</small></span></div><div class="workspace-select"><span class="workspace-dot"></span><span>Milas Travel & Tours</span><b>⌄</b></div><nav>${navGroups.map(g=>`<div class="nav-group"><small>${g.label}</small>${g.items.map(([id,label,icon])=>`<button class="nav-item ${state.active===id?'active':''}" data-nav="${id}"><i>${icon}</i>${label}${id==='leads'&&pendingNewLeads?`<em class="nav-count">${pendingNewLeads}</em>`:''}${id==='followups'&&dueFollowUps?`<em class="nav-count">${dueFollowUps}</em>`:''}${id==='outstanding'?'<em>3</em>':''}${id==='bookings'&&pendingNewOrders?`<em class="nav-count">${pendingNewOrders}</em>`:''}${id==='upcoming'&&todayCount?`<em class="nav-count">${todayCount}</em>`:''}</button>`).join('')}</div>`).join('')}</nav><div class="sidebar-footer"><button class="help-link">? <span>Help centre</span></button><div class="user-chip"><div class="avatar teal">AM</div><span><strong>Afiq Milas</strong><small>Super Admin</small></span><b>•••</b></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumbs"><span>${v.eyebrow}</span><b>/</b><strong>${v.title}</strong></div><div class="top-actions"><div class="global-search">⌕ <input id="globalSearch" placeholder="Search anything..." /><kbd>⌘ K</kbd></div><button class="icon-btn notification">♧<i></i></button><button class="mobile-menu">☰</button></div></header><div class="content"><div class="page-heading"><div><h1>${v.title}</h1><p>${v.subtitle}</p></div><div class="heading-actions">${state.active==='dashboard'?`<div class="range-select"><span>◷</span><select id="range"><option>Today</option><option>This Week</option><option selected>This Month</option><option>Custom Date</option></select></div>`:''}${v.action?`<button class="primary-btn" id="primaryAction">${v.action}</button>`:''}</div></div>${state.active==='dashboard'?dashboard():state.active==='settings'?settingsView():genericView(state.active)}</div></main></div><div id="toast" class="toast ${state.toast?'show':''}">${state.toast}</div>`; bind(); }
 
 function bind(){ document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{state.active=b.dataset.nav;state.toast='';render()}); document.querySelector('#primaryAction')?.addEventListener('click',()=>{state.toast='Foundation UI ready — workflow action akan disambung pada Milestone 2.';render();setTimeout(()=>{state.toast='';render()},3500)}); document.querySelector('#range')?.addEventListener('change',e=>{state.range=e.target.value;state.toast=`Dashboard ditapis: ${state.range}`;render();setTimeout(()=>{state.toast='';render()},2200)}); document.querySelector('#upcomingMonth')?.addEventListener('change',e=>{state.upcomingMonth=e.target.value;render()}); document.querySelector('#globalSearch')?.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.value){state.toast=`Carian global disediakan untuk: ${e.target.value}`;render()}}); if(state.active==='bookings' && !state.bookingSearch) document.querySelectorAll('.booking-status-group').forEach(group=>{group.classList.remove('expanded'); group.querySelector('.status-caret').textContent='›';}); }
+
+document.addEventListener('click', (event) => {
+  const openCustomer = event.target.closest('[data-open-customer]');
+  const newCustomer = state.active === 'customers' && event.target.closest('#primaryAction');
+  if (openCustomer) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const customer = JSON.parse(decodeURIComponent(openCustomer.dataset.openCustomer));
+    document.body.insertAdjacentHTML('beforeend', customerEditor(customer));
+    document.querySelector('#customerForm').dataset.originalCustomerId = customer.id;
+    return;
+  }
+  if (newCustomer) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    document.body.insertAdjacentHTML('beforeend', customerEditor());
+  }
+}, true);
+
+document.addEventListener('click', (event) => {
+  if (event.target.closest('[data-close-customer]')) document.querySelector('#customerModal')?.remove();
+});
+
+document.addEventListener('submit', (event) => {
+  if (event.target.id === 'customerForm') handleCustomerSubmit(event);
+}, true);
 importSupplierFromQuery();
 loadSharedData();
 
@@ -933,6 +1149,33 @@ function markLeadContacted(leadId) {
 }
 
 document.addEventListener('click', (event) => {
+  const outstandingWhatsApp = event.target.closest('[data-whatsapp-outstanding]');
+  if (outstandingWhatsApp && !outstandingWhatsApp.disabled) {
+    event.preventDefault();
+    const payload = JSON.parse(decodeURIComponent(outstandingWhatsApp.dataset.whatsappOutstanding));
+    const phone = String(payload.phone || '').replace(/[^0-9]/g, '');
+    if (!phone) return;
+    const message = 'Hi ' + (payload.customer || 'there') + ', this is a follow-up regarding invoice ' + (payload.invoiceId || '') + '. Your outstanding balance is RM ' + (payload.balance || '0.00') + '. Please let us know once payment has been made. Thank you.';
+    window.open('https://wa.me/' + phone + '?text=' + encodeURIComponent(message), '_blank', 'noopener');
+    return;
+  }
+  const recordPaymentAction = event.target.closest('#primaryAction');
+  if (recordPaymentAction && (state.active === 'payments' || state.active === 'outstanding')) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    document.querySelector('#invoicePaymentModal')?.remove();
+    document.body.insertAdjacentHTML('beforeend', recordPaymentModal());
+    updateInvoicePaymentSummary(document.querySelector('#invoicePaymentForm'));
+    return;
+  }
+  const invoicePayment = event.target.closest('[data-invoice-payment]');
+  if (invoicePayment) {
+    event.preventDefault();
+    const invoice = JSON.parse(decodeURIComponent(invoicePayment.dataset.invoicePayment)).data;
+    document.querySelector('#invoicePaymentModal')?.remove();
+    document.body.insertAdjacentHTML('beforeend', invoicePaymentModal(invoice));
+    return;
+  }
   const openInvoice = event.target.closest('[data-open-invoice]');
   if (openInvoice) {
     event.preventDefault();
@@ -1088,12 +1331,31 @@ document.addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('click', (event) => {
+  if (event.target.closest('[data-close-invoice-payment]')) document.querySelector('#invoicePaymentModal')?.remove();
   if (event.target.closest('[data-close-lead]')) document.querySelector('#leadModal')?.remove();
   if (event.target.closest('[data-close-quotation]')) document.querySelector('#quotationModal')?.remove();
   if (event.target.closest('[data-close-quotation-preview]')) document.querySelector('#quotationPreviewModal')?.remove();
 });
 
 document.addEventListener('change', (event) => {
+  if (event.target.matches('#invoicePaymentForm [data-payment-invoice]')) {
+    const form = event.target.form;
+    const invoice = JSON.parse(decodeURIComponent(event.target.value));
+    const summary = invoicePaymentState(invoice);
+    const total = Number(String(invoice.total || '0').replace(/[^0-9.-]/g, '') || 0);
+    form.dataset.invoice = event.target.value;
+    form.dataset.invoiceTotal = total.toFixed(2);
+    form.dataset.previousOutstanding = summary.balance.toFixed(2);
+    form.querySelector('[name="invoiceTotal"]').value = 'RM ' + total.toFixed(2);
+    form.querySelector('[name="paymentAmount"]').value = '';
+    form.querySelector('[name="paymentAmount"]').max = summary.balance.toFixed(2);
+    form.querySelector('[name="previousPayment"]').value = 'RM ' + summary.paid.toFixed(2);
+    form.querySelector('[name="previousOutstanding"]').value = 'RM ' + summary.balance.toFixed(2);
+    form.querySelector('[name="balancePayment"]').value = 'RM ' + summary.balance.toFixed(2);
+    updateInvoicePaymentSummary(form);
+    return;
+  }
+  if (event.target.matches('#invoicePaymentForm [name="paymentType"]')) { updateInvoicePaymentSummary(event.target.form); return; }
   if (event.target.matches('[data-lead-filter]')) {
     state.leadFilter = event.target.value;
     if (state.active === 'leads') render();
@@ -1113,6 +1375,20 @@ document.addEventListener('click', (event) => {
 });
 
 document.addEventListener('submit', (event) => {
+  if (event.target.id === 'invoicePaymentForm') {
+    event.preventDefault();
+    const form = event.target;
+    const invoice = JSON.parse(decodeURIComponent(form.dataset.invoice || ''));
+    const paymentData = Object.fromEntries(new FormData(form).entries());
+    if (recordInvoicePayment(invoice, paymentData.paymentType, paymentData.paymentAmount)) {
+      form.closest('#invoicePaymentModal')?.remove();
+      state.active = 'invoices';
+      state.toast = 'Payment berjaya direkod. Lead ditukar kepada Won dan booking baharu dicipta.';
+      render();
+      setTimeout(() => { state.toast = ''; render(); }, 2800);
+    } else { state.toast = 'Jumlah payment tidak sah. Sila semak jumlah bayaran.'; }
+    return;
+  }
   if (event.target.id !== 'sendBookingForm') return;
   event.preventDefault();
   const form = event.target, data = Object.fromEntries(new FormData(form).entries()), contact = String(data.supplierContact || '').trim();
@@ -1139,6 +1415,7 @@ document.addEventListener('change', (event) => {
 });
 
 document.addEventListener('input', (event) => {
+  if (event.target.matches('#invoicePaymentForm [name="paymentAmount"]')) { updateInvoicePaymentSummary(event.target.form); return; }
   if (event.target.matches('[data-lead-received-date]')) {
     const followUp = event.target.form?.querySelector('[data-lead-follow-up]');
     if (followUp) followUp.value = leadFollowUpDate(event.target.value);
