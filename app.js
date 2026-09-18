@@ -171,12 +171,15 @@ const leadSeed = moduleData.leads.rows.map(([id, customer, source, packageName, 
 function normaliseLead(lead) {
   const receivedDate = lead.receivedDate || dateKeyOffset(lead.followUpDate, -3) || localDateKey();
   const status = lead.status === 'Qualified' ? 'Follow-up' : lead.status;
-  return {...lead, status, receivedDate, followUpDate: leadFollowUpDate(receivedDate)};
+  return normalisePhoneRecord({...lead, status, receivedDate, followUpDate: leadFollowUpDate(receivedDate)});
 }
 function storedLeads() {
   try {
     const saved = JSON.parse(localStorage.getItem('milas-leads') || 'null');
-    return Array.isArray(saved) ? saved.map(normaliseLead) : leadSeed.map(lead => ({...lead}));
+    if (!Array.isArray(saved)) return leadSeed.map(lead => ({...lead}));
+    const leads = saved.map(normaliseLead);
+    if (JSON.stringify(leads) !== JSON.stringify(saved)) localStorage.setItem('milas-leads', JSON.stringify(leads));
+    return leads;
   } catch { return leadSeed.map(lead => ({...lead})); }
 }
 const leadStatuses = ['New Lead', 'Contacted', 'Quotation Sent', 'Follow-up', 'Invoice Sent', 'Won', 'Lost'];
@@ -226,7 +229,16 @@ function handleLeadSubmit(event) {
 function storedQuotations() {
   try {
     const saved = JSON.parse(localStorage.getItem('milas-quotations') || 'null');
-    return Array.isArray(saved) ? saved : moduleData.quotations.rows.map(([id, customer, packageName, travelDate, total, status]) => ({id, customer, phone: '', email: '', packageName, travelDate, total, status}));
+    if (!Array.isArray(saved)) return moduleData.quotations.rows.map(([id, customer, packageName, travelDate, total, status]) => ({id, customer, phone: '', email: '', packageName, travelDate, total, status}));
+    const quotations = [];
+    const leadIds = new Set();
+    saved.map(normalisePhoneRecord).forEach(quotation => {
+      if (quotation.leadId && leadIds.has(quotation.leadId)) return;
+      if (quotation.leadId) leadIds.add(quotation.leadId);
+      quotations.push(quotation);
+    });
+    if (JSON.stringify(quotations) !== JSON.stringify(saved)) localStorage.setItem('milas-quotations', JSON.stringify(quotations));
+    return quotations;
   } catch { return []; }
 }
 function quotationDocumentSnapshot(quotation) {
@@ -1197,9 +1209,10 @@ function escapeMarkup(value) { return String(value ?? '').replaceAll('&', '&amp;
 const countryDialCodes = Object.fromEntries('AD:+376 AE:+971 AF:+93 AG:+1268 AI:+1264 AL:+355 AM:+374 AO:+244 AQ:+672 AR:+54 AS:+1684 AT:+43 AU:+61 AW:+297 AX:+35818 AZ:+994 BA:+387 BB:+1246 BD:+880 BE:+32 BF:+226 BG:+359 BH:+973 BI:+257 BJ:+229 BL:+590 BM:+1441 BN:+673 BO:+591 BQ:+599 BR:+55 BS:+1242 BT:+975 BV:+47 BW:+267 BY:+375 BZ:+501 CA:+1 CC:+61 CD:+243 CF:+236 CG:+242 CH:+41 CI:+225 CK:+682 CL:+56 CM:+237 CN:+86 CO:+57 CR:+506 CU:+53 CV:+238 CW:+599 CX:+61 CY:+357 CZ:+420 DE:+49 DJ:+253 DK:+45 DM:+1767 DO:+1809 DZ:+213 EC:+593 EE:+372 EG:+20 EH:+212 ER:+291 ES:+34 ET:+251 FI:+358 FJ:+679 FK:+500 FM:+691 FO:+298 FR:+33 GA:+241 GB:+44 GD:+1473 GE:+995 GF:+594 GG:+44 GH:+233 GI:+350 GL:+299 GM:+220 GN:+224 GP:+590 GQ:+240 GR:+30 GS:+500 GT:+502 GU:+1671 GW:+245 GY:+592 HK:+852 HM:+672 HN:+504 HR:+385 HT:+509 HU:+36 ID:+62 IE:+353 IL:+972 IM:+44 IN:+91 IO:+246 IQ:+964 IR:+98 IS:+354 IT:+39 JE:+44 JM:+1876 JO:+962 JP:+81 KE:+254 KG:+996 KH:+855 KI:+686 KM:+269 KN:+1869 KP:+850 KR:+82 KW:+965 KY:+1345 KZ:+7 LA:+856 LB:+961 LC:+1758 LI:+423 LK:+94 LR:+231 LS:+266 LT:+370 LU:+352 LV:+371 LY:+218 MA:+212 MC:+377 MD:+373 ME:+382 MF:+590 MG:+261 MH:+692 MK:+389 ML:+223 MM:+95 MN:+976 MO:+853 MP:+1670 MQ:+596 MR:+222 MS:+1664 MT:+356 MU:+230 MV:+960 MW:+265 MX:+52 MY:+60 MZ:+258 NA:+264 NC:+687 NE:+227 NF:+672 NG:+234 NI:+505 NL:+31 NO:+47 NP:+977 NR:+674 NU:+683 NZ:+64 OM:+968 PA:+507 PE:+51 PF:+689 PG:+675 PH:+63 PK:+92 PL:+48 PM:+508 PN:+64 PR:+1787 PS:+970 PT:+351 PW:+680 PY:+595 QA:+974 RE:+262 RO:+40 RS:+381 RU:+7 RW:+250 SA:+966 SB:+677 SC:+248 SD:+249 SE:+46 SG:+65 SH:+290 SI:+386 SJ:+47 SK:+421 SL:+232 SM:+378 SN:+221 SO:+252 SR:+597 SS:+211 ST:+239 SV:+503 SX:+1721 SY:+963 SZ:+268 TC:+1649 TD:+235 TF:+262 TG:+228 TH:+66 TJ:+992 TK:+690 TL:+670 TM:+993 TN:+216 TO:+676 TR:+90 TT:+1868 TV:+688 TW:+886 TZ:+255 UA:+380 UG:+256 UM:+1 US:+1 UY:+598 UZ:+998 VA:+39 VC:+1784 VE:+58 VG:+1284 VI:+1340 VN:+84 VU:+678 WF:+681 WS:+685 YE:+967 YT:+262 ZA:+27 ZM:+260 ZW:+263 XK:+383'.split(' ').map(item => item.split(':')));
 const countryNames = new Intl.DisplayNames(['en'], { type: 'region' });
 function phoneValueParts(value, fallback = '+60') {
-  const compact = String(value || '').replace(/[^+0-9]/g, '');
-  const code = Object.values(countryDialCodes).sort((a, b) => b.length - a.length).find(item => compact.startsWith(item)) || fallback;
-  return { code, local: compact.replace(new RegExp('^' + code.replace('+', '')), '') };
+  const digits = String(value || '').replace(/[^0-9]/g, '');
+  const code = Object.values(countryDialCodes).sort((a, b) => b.length - a.length).find(item => digits.startsWith(item.replace('+', ''))) || fallback;
+  const codeDigits = code.replace('+', '');
+  return { code, local: phoneLocalDigits(digits, codeDigits) };
 }
 function phoneCountryOptions(selected = '+60') {
   return Object.entries(countryDialCodes).map(([, dial]) => `<option value="${dial}" ${dial === selected ? 'selected' : ''}>${escapeMarkup(dial)}</option>`).join('');
@@ -1209,10 +1222,29 @@ function phoneFieldMarkup(fieldName, label, value = '', required = false) {
   return `<label>${label}<div class="phone-input-group"><select name="${fieldName}CountryCode" aria-label="Country calling code">${phoneCountryOptions(parts.code)}</select><input name="${fieldName}" type="tel" value="${escapeMarkup(parts.local)}" placeholder="12-345 6789" pattern="[0-9][0-9\\s().-]{5,17}" title="Masukkan nombor telefon tanpa kod negara" ${required ? 'required' : ''} /></div></label>`;
 }
 function combinePhoneField(data, fieldName = 'phone') {
-  const local = String(data[fieldName] || '').replace(/[^0-9]/g, '');
-  if (local) data[fieldName] = `${data[`${fieldName}CountryCode`] || '+60'} ${local}`;
+  const raw = String(data[fieldName] || '');
+  const digits = raw.replace(/[^0-9]/g, '');
+  const code = data[`${fieldName}CountryCode`] || '+60';
+  const codeDigits = String(code).replace(/[^0-9]/g, '');
+  const local = phoneLocalDigits(digits, codeDigits);
+  if (local) data[fieldName] = `${code} ${local}`;
   delete data[`${fieldName}CountryCode`];
   return data;
+}
+function phoneLocalDigits(digits, codeDigits) {
+  let local = digits;
+  while (local.startsWith(codeDigits) && local.length > codeDigits.length) local = local.slice(codeDigits.length);
+  return local;
+}
+function normalisePhoneRecord(record) {
+  const next = {...record};
+  ['phone', 'contactPhone', 'whatsapp'].forEach(key => {
+    if (key in next && next[key]) {
+      const parts = phoneValueParts(next[key]);
+      next[key] = parts.local ? `${parts.code} ${parts.local}` : '';
+    }
+  });
+  return next;
 }
 function nextCustomerId(customers) {
   const sequence = customers.map(customer => Number(String(customer.id || '').match(/(\d+)$/)?.[1])).filter(Number.isFinite);
@@ -1529,19 +1561,22 @@ document.addEventListener('click', (event) => {
       Object.assign(lead, formData, {status: 'Quotation Sent'});
       localStorage.setItem('milas-leads', JSON.stringify(leads));
       const quotations = storedQuotations();
+      const existingIndex = quotations.findIndex(item => item.leadId === lead.id);
+      const existing = existingIndex >= 0 ? quotations[existingIndex] : null;
       const quotation = {
-        id: nextQuotationNumber(quotations),
+        id: existing?.id || nextQuotationNumber(quotations),
         leadId: lead.id,
-        customer: formData.customer,
-        phone: formData.phone,
-        email: formData.email,
-        packageName: formData.packageName,
+        customer: lead.customer,
+        phone: lead.phone,
+        email: lead.email,
+        packageName: lead.packageName,
         travelDate: '',
-        total: formData.value || '—',
+        total: lead.value || '—',
         status: 'Draft',
         createdAt: new Date().toISOString(),
       };
-      quotations.unshift(quotation);
+      if (existingIndex >= 0) quotations[existingIndex] = {...quotations[existingIndex], ...quotation};
+      else quotations.unshift(quotation);
       localStorage.setItem('milas-quotations', JSON.stringify(quotations));
       document.querySelector('#leadModal')?.remove();
       state.active = 'quotations';
@@ -2145,8 +2180,13 @@ function formFieldManager(form) {
 }
 function refreshFormFieldManager(formId) {
   const form = document.getElementById(formId);
-  document.querySelector('#formFieldManager')?.remove();
-  if (form) document.body.insertAdjacentHTML('beforeend', formFieldManager(form));
+  const manager = document.querySelector('#formFieldManager');
+  if (!form || !manager) return;
+  const template = document.createElement('template');
+  template.innerHTML = formFieldManager(form);
+  const nextList = template.content.querySelector('.field-manager-list');
+  const currentList = manager.querySelector('.field-manager-list');
+  if (nextList && currentList) currentList.replaceWith(nextList);
 }
 document.addEventListener('click', event => {
   const customize = event.target.closest('[data-customize-form]');
@@ -2167,7 +2207,7 @@ document.addEventListener('click', event => {
     [order[index], order[next]] = [order[next], order[index]];
     const configs = formFieldConfigs(), config = configs[formId] || {hidden: [], custom: []};
     config.order = order; configs[formId] = config; saveFormFieldConfigs(configs);
-    enhanceFormFields(document.getElementById(formId)); refreshFormFieldManager(formId); return;
+    withFormFieldObserverPaused(() => { enhanceFormFields(document.getElementById(formId)); refreshFormFieldManager(formId); }); return;
   }
   const add = event.target.closest('[data-add-form-field]');
   if (add) {
@@ -2215,7 +2255,7 @@ document.addEventListener('drop', event => {
   order.splice(insertionIndex, 0, sourceKey);
   const formId = manager.dataset.formId, configs = formFieldConfigs(), config = configs[formId] || {hidden: [], custom: []};
   config.order = order; configs[formId] = config; saveFormFieldConfigs(configs);
-  enhanceFormFields(document.getElementById(formId)); refreshFormFieldManager(formId);
+  withFormFieldObserverPaused(() => { enhanceFormFields(document.getElementById(formId)); refreshFormFieldManager(formId); });
 });
 document.addEventListener('dragend', event => {
   event.target.closest('[data-form-field-row]')?.classList.remove('is-dragging');
@@ -2229,11 +2269,29 @@ document.addEventListener('change', event => {
   config.hidden = visible.checked ? config.hidden.filter(item => item !== key) : [...new Set([...config.hidden, key])];
   configs[formId] = config; saveFormFieldConfigs(configs); enhanceFormFields(document.getElementById(formId));
 });
-const formFieldObserver = new MutationObserver(() => {
+let formFieldObserverUpdating = false;
+function withFormFieldObserverPaused(update) {
+  formFieldObserver.disconnect();
+  try {
+    return update();
+  } finally {
+    formFieldObserver.observe(document.body, {childList: true, subtree: true});
+  }
+}
+const formFieldObserver = new MutationObserver(records => {
+  const managerOnlyMutation = records.length > 0 && records.every(record => {
+    const target = record.target instanceof Element ? record.target : record.target.parentElement;
+    if (target?.closest('#formFieldManager')) return true;
+    return [...record.addedNodes, ...record.removedNodes].every(node => !(node instanceof Element) || node.closest('#formFieldManager'));
+  });
+  if (managerOnlyMutation) return;
+  if (formFieldObserverUpdating) return;
+  formFieldObserverUpdating = true;
   formFieldObserver.disconnect();
   try {
     document.querySelectorAll('form.booking-modal').forEach(enhanceFormFields);
   } finally {
+    formFieldObserverUpdating = false;
     formFieldObserver.observe(document.body, {childList: true, subtree: true});
   }
 });
