@@ -201,10 +201,11 @@ function leadEditor(record = {}) {
   const lead = normaliseLead({...record});
   if (!lead.id) lead.id = nextLeadId(storedLeads());
   const input = (key, label, type = 'text', attrs = '') => `<label>${label}<input name="${key}" type="${type}" value="${lead[key] || ''}" ${key === 'id' ? 'readonly' : ''} ${attrs} /></label>`;
-  const requiredContact = record.id && lead.status === 'Contacted' ? 'required' : '';
+  const requiredContact = 'required';
+  const requiredMark = '<span class="required-mark" aria-hidden="true">*</span>';
   const quotationAction = record.id && lead.status === 'Contacted' ? `<button type="button" class="proceed-quotation" data-proceed-quotation="${lead.id}">Proceed to quotation</button>` : '';
   const editorActions = quotationAction || '<button type="button" class="ghost-btn" data-close-lead>Cancel</button><button type="submit" class="primary-btn">Save lead</button>';
-  return `<div class="modal-backdrop" id="leadModal"><form class="booking-modal lead-modal" id="leadForm" onsubmit="return handleLeadSubmit(event)"><div class="modal-head"><div><span class="eyebrow">CRM / Leads</span><h2>${record.id ? 'Edit lead' : 'New lead'}</h2><p>Simpan dan urus lead baharu Milas Travel.</p></div><button type="button" class="modal-close" data-close-lead>×</button></div><div class="editor-grid">${input('id','Lead ID')}${input('customer','Customer name','text',requiredContact)}${phoneFieldMarkup('phone','Phone number',lead.phone,Boolean(requiredContact))}${input('email','Email','email',requiredContact)}${nationalityFieldMarkup(lead.nationality)}<label>Source<select name="source">${leadSources.map(source => `<option ${lead.source === source ? 'selected' : ''}>${source}</option>`).join('')}</select></label>${input('packageName','Interested package')}${input('value','Estimated value')}${input('receivedDate','Lead received date','date','data-lead-received-date')}${input('followUpDate','Follow-up date','date','readonly data-lead-follow-up')}<label>Status<select name="status">${leadStatuses.map(status => `<option ${lead.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></label><label>Follow-up status<select name="followUpStatus"><option ${lead.followUpStatus !== 'Done' ? 'selected' : ''}>Pending</option><option ${lead.followUpStatus === 'Done' ? 'selected' : ''}>Done</option></select></label><label class="full-width">Notes<textarea name="notes" rows="4">${lead.notes || ''}</textarea></label></div><div class="modal-actions">${editorActions}</div></form></div>`;
+  return `<div class="modal-backdrop" id="leadModal"><form class="booking-modal lead-modal" id="leadForm" onsubmit="return handleLeadSubmit(event)"><div class="modal-head"><div><span class="eyebrow">CRM / Leads</span><h2>${record.id ? 'Edit lead' : 'New lead'}</h2><p>Simpan dan urus lead baharu Milas Travel.</p></div><button type="button" class="modal-close" data-close-lead>×</button></div><div class="editor-grid">${input('id','Lead ID')}${input('customer',`Customer name ${requiredMark}`,'text',requiredContact)}${phoneFieldMarkup('phone',`Phone number ${requiredMark}`,lead.phone,Boolean(requiredContact))}${input('email',`Email ${requiredMark}`,'email',requiredContact)}${nationalityFieldMarkup(lead.nationality, true, `Nationality ${requiredMark}`)}<label>Source<select name="source">${leadSources.map(source => `<option ${lead.source === source ? 'selected' : ''}>${source}</option>`).join('')}</select></label>${input('packageName','Interested package')}${input('value','Estimated value')}${input('receivedDate','Lead received date','date','data-lead-received-date')}${input('followUpDate','Follow-up date','date','readonly data-lead-follow-up')}<label>Status<select name="status">${leadStatuses.map(status => `<option ${lead.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></label><label>Follow-up status<select name="followUpStatus"><option ${lead.followUpStatus !== 'Done' ? 'selected' : ''}>Pending</option><option ${lead.followUpStatus === 'Done' ? 'selected' : ''}>Done</option></select></label><label class="full-width">Notes<textarea name="notes" rows="4">${lead.notes || ''}</textarea></label></div><div class="modal-actions">${editorActions}</div></form></div>`;
 }
 function persistLeadForm(form) {
   const lead = combinePhoneField(Object.fromEntries(new FormData(form).entries())), leads = storedLeads(), originalId = form.dataset.originalLeadId || lead.id;
@@ -217,6 +218,7 @@ function persistLeadForm(form) {
 }
 function handleLeadSubmit(event) {
   event.preventDefault();
+  if (!event.target.reportValidity()) return false;
   persistLeadForm(event.target);
   document.querySelector('#leadModal')?.remove();
   state.active = 'leads';
@@ -443,7 +445,7 @@ function quotationExtrasMarkup(packageId, quotation = {}) {
   const selectedAddons = selectedQuotationAddons(quotation.selectedAddons).map(addon => addon.name);
   if (!optionalPackages.length && !addons.length) return '';
   const selectedAddonLabel = selectedAddons.length ? selectedAddons.join(', ') : 'Pilih add-on';
-  return `<div class="quotation-extras full-width" data-quotation-extras>${optionalPackages.length ? `<label>Optional package<select name="optionalPackage" data-quotation-calculator><option value="">Base package</option>${optionalPackages.map(option => `<option value="${escapeMarkup(option.option)}" ${quotation.optionalPackage === option.option ? 'selected' : ''}>${escapeMarkup(option.option)}</option>`).join('')}</select></label>` : ''}${addons.length ? `<label>Add-ons<details class="multi-select quotation-addon-multi"><summary>${escapeMarkup(selectedAddonLabel)}</summary><div class="multi-select-options">${addons.map(addon => `<label><input type="checkbox" name="selectedAddons" value="${escapeMarkup(JSON.stringify({name: addon.name, basePrice: addon.basePrice}))}" data-quotation-calculator ${selectedAddons.includes(addon.name) ? 'checked' : ''} />${escapeMarkup(addon.name)} <span>RM ${addon.basePrice.toFixed(2)}</span></label>`).join('')}</div></details></label>` : ''}</div>`;
+  return `<div class="quotation-extras full-width" data-quotation-extras>${optionalPackages.length ? `<label class="quotation-extra-field">Optional package<select name="optionalPackage" data-quotation-calculator><option value="">Base package</option>${optionalPackages.map(option => `<option value="${escapeMarkup(option.option)}" ${quotation.optionalPackage === option.option ? 'selected' : ''}>${escapeMarkup(option.option)}</option>`).join('')}</select></label>` : ''}${addons.length ? `<label class="quotation-extra-field">Add-ons<details class="multi-select quotation-addon-multi"><summary>${escapeMarkup(selectedAddonLabel)}</summary><div class="multi-select-options">${addons.map(addon => `<label><input type="checkbox" name="selectedAddons" value="${escapeMarkup(JSON.stringify({name: addon.name, basePrice: addon.basePrice}))}" data-quotation-calculator ${selectedAddons.includes(addon.name) ? 'checked' : ''} />${escapeMarkup(addon.name)} <span>RM ${addon.basePrice.toFixed(2)}</span></label>`).join('')}</div></details></label>` : ''}</div>`;
 }
 function quotationAddonsTotal(form) {
   return selectedQuotationAddons(new FormData(form).getAll('selectedAddons')).reduce((sum, value) => {
@@ -475,9 +477,15 @@ function quotationEditor(record = {}) {
   if (!quotation.id) quotation.id = nextQuotationNumber(storedQuotations());
   const products = storedTourProducts();
   const selectedProduct = products.find(product => product.productId === quotation.packageId || product.name === quotation.packageName || (quotation.packageName && String(quotation.packageName).includes(product.name))) || products[0];
-  const input = (key, label, type = 'text') => key === 'phone' ? phoneFieldMarkup('phone', label, quotation.phone) : key === 'email' ? `<label>${label}<input name="${key}" type="${type}" value="${quotation[key] || ''}" /></label>${nationalityFieldMarkup(quotation.nationality)}` : `<label>${label}<input name="${key}" type="${type}" value="${quotation[key] || ''}" ${key === 'id' ? 'readonly' : ''} /></label>`;
+  const requiredMark = '<span class="required-mark" aria-hidden="true">*</span>';
+  const input = (key, label, type = 'text') => {
+    const required = ['customer', 'phone', 'email'].includes(key);
+    const displayedLabel = required ? `${label} ${requiredMark}` : label;
+    if (key === 'phone') return phoneFieldMarkup('phone', displayedLabel, quotation.phone, true);
+    return `<label>${displayedLabel}<input name="${key}" type="${type}" value="${quotation[key] || ''}" ${key === 'id' ? 'readonly' : ''} ${required ? 'required' : ''} /></label>`;
+  };
   const packageId = selectedProduct?.productId || quotation.packageId || '';
-  return `<div class="modal-backdrop" id="quotationModal"><form class="booking-modal quotation-modal" id="quotationForm" onsubmit="return handleQuotationSubmit(event)"><div class="modal-head"><div><span class="eyebrow">Sales / Quotations</span><h2>${record.id ? 'Edit quotation' : 'New quotation'}</h2><p>Lengkapkan dan simpan quotation customer.</p></div><button type="button" class="modal-close" data-close-quotation>×</button></div><div class="editor-grid">${input('id','Quotation number')}${input('leadId','Lead ID')}${input('customer','Customer name')}${input('phone','Phone number','tel')}${input('email','Email','email')}<label class="full-width">Package<select name="packageId" data-quotation-package>${products.length ? products.map(product => `<option value="${product.productId}" ${product.productId === packageId ? 'selected' : ''}>${product.productId} — ${product.name || 'Unnamed package'}</option>`).join('') : '<option value="">Tiada package dalam database</option>'}</select></label><div class="quotation-extras-slot full-width">${quotationExtrasMarkup(packageId, quotation)}</div>${input('travelDate','Travel date','date')}<label>No of adults<input name="adults" type="number" min="0" step="1" value="${quotation.adults || 0}" data-quotation-calculator /></label><label>No of children<input name="children" type="number" min="0" step="1" value="${quotation.children || 0}" data-quotation-calculator /></label><label>No of infants<input name="infants" type="number" min="0" step="1" value="${quotation.infants || 0}" data-quotation-calculator /></label><label>Single supplement<input name="singleSupplement" type="number" min="0" step="1" value="${quotation.singleSupplement || 0}" data-quotation-calculator /></label><label>Discount (%)<input name="discount" type="number" min="0" max="100" step="0.01" value="${quotation.discount || 0}" data-quotation-calculator /></label><label>Total<input name="total" type="text" value="${quotation.total || '0.00'}" data-quotation-total readonly /></label><label>Status<select name="status">${quotationStatuses.map(status => `<option ${quotation.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></label><label class="full-width">Notes<textarea name="notes" rows="4">${quotation.notes || ''}</textarea></label></div><div class="modal-actions"><button type="button" class="ghost-btn" data-preview-quotation>Preview quotation</button><button type="submit" class="primary-btn">Save</button></div></form></div>`;
+  return `<div class="modal-backdrop" id="quotationModal"><form class="booking-modal quotation-modal" id="quotationForm" onsubmit="return handleQuotationSubmit(event)"><div class="modal-head"><div><span class="eyebrow">Sales / Quotations</span><h2>${record.id ? 'Edit quotation' : 'New quotation'}</h2><p>Lengkapkan dan simpan quotation customer.</p></div><button type="button" class="modal-close" data-close-quotation>×</button></div><div class="editor-grid">${input('id','Quotation number')}${input('leadId','Lead ID')}${input('customer','Customer name')}${input('phone','Phone number','tel')}${input('email','Email','email')}${nationalityFieldMarkup(quotation.nationality, true, `Nationality ${requiredMark}`)}<label class="full-width">Package<select name="packageId" data-quotation-package>${products.length ? products.map(product => `<option value="${product.productId}" ${product.productId === packageId ? 'selected' : ''}>${product.productId} — ${product.name || 'Unnamed package'}</option>`).join('') : '<option value="">Tiada package dalam database</option>'}</select></label><div class="quotation-extras-slot full-width">${quotationExtrasMarkup(packageId, quotation)}</div>${input('travelDate','Travel date','date')}<label>No of adults<input name="adults" type="number" min="0" step="1" value="${quotation.adults || 0}" data-quotation-calculator /></label><label>No of children<input name="children" type="number" min="0" step="1" value="${quotation.children || 0}" data-quotation-calculator /></label><label>No of infants<input name="infants" type="number" min="0" step="1" value="${quotation.infants || 0}" data-quotation-calculator /></label><label>Single supplement<input name="singleSupplement" type="number" min="0" step="1" value="${quotation.singleSupplement || 0}" data-quotation-calculator /></label><label>Discount (%)<input name="discount" type="number" min="0" max="100" step="0.01" value="${quotation.discount || 0}" data-quotation-calculator /></label><label>Total<input name="total" type="text" value="${quotation.total || '0.00'}" data-quotation-total readonly /></label><label>Status<select name="status">${quotationStatuses.map(status => `<option ${quotation.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></label><label class="full-width">Notes<textarea name="notes" rows="4">${quotation.notes || ''}</textarea></label></div><div class="modal-actions"><button type="button" class="ghost-btn" data-preview-quotation>Preview quotation</button><button type="submit" class="primary-btn">Save</button></div></form></div>`;
 }
 function quotationPreview(data, packageName, total) {
   const previewDocument = quotationPdfMarkup({data, packageName, total}).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -518,8 +526,21 @@ function quotationPdfMarkup({data, packageName, total, documentType = 'QUOTATION
   const addonRows = selectedAddons.map(addon => `<tr><td>${escapeDocumentText(addon.name || 'Add-on')}</td><td>1</td><td>RM ${(Number(addon.basePrice) || 0).toFixed(2)}</td><td>RM ${(Number(addon.basePrice) || 0).toFixed(2)}</td></tr>`).join('');
   return `<!doctype html><html><head><meta charset="UTF-8"><title>${escapeDocumentText(data.id || documentType)}</title><style>@page{size:210mm 297mm;margin:14mm}*{box-sizing:border-box}body{margin:0;padding:14mm;font-family:Arial,sans-serif;color:#24364a;font-size:12px}@media print{body{padding:0}}.sheet{width:100%;min-height:267mm}.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #18a889;padding-bottom:18px}.brand{display:flex;gap:10px;align-items:center}.logo{width:42px;height:42px;border-radius:12px;background:#18a889;color:#fff;display:grid;place-items:center;font-size:24px;font-weight:800}.company h1{margin:0;font-size:21px;color:#122238}.company p{margin:4px 0 0;color:#718096}.quote-meta{text-align:right}.quote-meta h2{margin:0 0 6px;color:#18a889;font-size:22px}.quote-meta p{margin:3px 0;color:#718096}.section{margin-top:24px}.section-title{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#18a889;margin-bottom:8px}.recipient{background:#f4faf8;border:1px solid #d9eee8;border-radius:8px;padding:13px;display:grid;grid-template-columns:120px 1fr;gap:6px}.recipient strong{color:#718096}.package{border:1px solid #dce5eb;border-radius:8px;padding:15px}.package h3{margin:0 0 5px;font-size:17px}.package p{margin:0;color:#718096}.package-notes{display:grid;grid-template-columns:1fr;gap:8px;margin-top:72px;width:65%;text-align:left}.package-note{padding:0}.package-note strong{display:block;color:#477466;margin-bottom:5px}.package-note ul{margin:0;padding-left:18px}.package-note li{margin:3px 0}.itinerary-notes{display:grid;gap:7px;margin-top:18px;width:65%;text-align:left;break-inside:avoid}.itinerary-notes>strong{color:#477466}.itinerary-day{display:grid;grid-template-columns:48px minmax(0,1fr);gap:8px}.itinerary-day b{color:#477466}.itinerary-day span{white-space:pre-wrap}.pricing{width:100%;border-collapse:collapse;margin-top:12px}.pricing th{background:#edf8f5;color:#477466;text-align:left;font-size:11px}.pricing th,.pricing td{padding:10px;border-bottom:1px solid #e7edf0}.pricing td:nth-child(2),.pricing td:nth-child(3),.pricing td:nth-child(4),.pricing th:nth-child(2),.pricing th:nth-child(3),.pricing th:nth-child(4){text-align:right}.invoice-summary{display:flex;justify-content:space-between;align-items:flex-start;gap:32px;margin-top:58px}.totals{margin:0 0 0 auto;width:280px;flex:0 0 280px}.totals div{display:flex;justify-content:space-between;padding:5px 0}.totals .grand{border-top:2px solid #18a889;margin-top:5px;padding-top:10px;font-size:17px;font-weight:800;color:#18a889}.bank-details{width:58%;margin:0;padding:14px;border:1px solid #d9eee8;border-left:3px solid #18a889;border-radius:8px;background:#f4faf8;text-align:left;break-inside:avoid;page-break-inside:avoid}.bank-details dl{display:grid;grid-template-columns:88px minmax(0,1fr);gap:7px 10px;margin:0;line-height:1.5}.bank-details dt{color:#718096}.bank-details dd{margin:0;font-weight:700;overflow-wrap:anywhere}.bank-account-number{font-variant-numeric:tabular-nums;letter-spacing:.03em}.footer{border-top:1px solid #dce5eb;margin-top:34px;padding-top:12px;color:#8492a3;text-align:center;font-size:10px}</style></head><body><main class="sheet"><header class="header"><div class="brand"><div class="logo">M</div><div class="company"><h1>Milas Travel &amp; Tours</h1><p>Sabah, Malaysia</p></div></div><div class="quote-meta"><h2>${documentType}</h2><p><strong>${escapeDocumentText(data.id || '—')}</strong></p><p>${displayedDate}</p>${quotationReference ? `<p>Quotation: ${escapeDocumentText(quotationReference)}</p>` : ''} </div></header><section class="section"><div class="section-title">Bill to</div><div class="recipient"><strong>Name</strong><span>${escapeDocumentText(data.customer || '—')}</span><strong>Phone</strong><span>${escapeDocumentText(data.phone || '—')}</span><strong>Email</strong><span>${escapeDocumentText(data.email || '—')}</span></div></section><section class="section"><div class="section-title">Package details</div><div class="package"><h3>${escapeDocumentText(packageName || '—')}</h3><p>Travel date: ${data.travelDate ? formatTravelDate(data.travelDate) : '—'}</p>${data.optionalPackage ? `<p>Optional package: ${escapeDocumentText(data.optionalPackage)}</p>` : ''}</div><table class="pricing"><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody>${line('Adult',data.adults,pricing.adult)}${line('Child',data.children,pricing.child)}${line('Infant',data.infants,pricing.infant)}${line('Single supplement',data.singleSupplement,pricing.solo)}${addonRows}${!hasParticipants && !selectedAddons.length ? `<tr><td>${escapeDocumentText(packageName || 'Package')}</td><td>1</td><td>RM ${subtotal.toFixed(2)}</td><td>RM ${subtotal.toFixed(2)}</td></tr>` : ''}</tbody></table>${packageNotes ? `<div class="package-notes">${packageNotes}</div>` : ''}${itineraryMarkup}<div class="invoice-summary">${bankDetailsMarkup}<div class="totals"><div><span>Subtotal</span><strong>RM ${Number(subtotal).toFixed(2)}</strong></div><div><span>Discount (${data.discount || 0}%)</span><strong>- RM ${discountAmount.toFixed(2)}</strong></div><div class="grand"><span>Total</span><span>RM ${Number(total || 0).toFixed(2)}</span></div></div></div>${data.notes ? `<div class="section"><div class="section-title">Notes</div><p style="white-space:pre-wrap">${escapeDocumentText(data.notes)}</p></div>` : ''} </section><footer class="footer">Thank you for choosing Milas Travel &amp; Tours · Sabah, Malaysia</footer></main></body></html>`;
 }
+function requiredQuotationFieldsValid(form) {
+  const requiredAddons = [...form.querySelectorAll('.quotation-extra-field[data-required-field="true"]')]
+    .some(label => label.querySelector('[name="selectedAddons"]') && !form.querySelector('[name="selectedAddons"]:checked'));
+  if (requiredAddons) {
+    const checkbox = form.querySelector('[name="selectedAddons"]');
+    checkbox?.setCustomValidity('Sila pilih sekurang-kurangnya satu add-on.');
+    checkbox?.reportValidity();
+    checkbox?.setCustomValidity('');
+    return false;
+  }
+  return true;
+}
 function handleQuotationSubmit(event) {
   event.preventDefault();
+  if (!event.target.reportValidity() || !requiredQuotationFieldsValid(event.target)) return false;
   const formData = new FormData(event.target);
   const quotation = combinePhoneField(Object.fromEntries(formData.entries()));
   quotation.selectedAddons = formData.getAll('selectedAddons').map(value => { try { return JSON.parse(value); } catch { return null; } }).filter(Boolean);
@@ -1323,8 +1344,8 @@ function countryOptions(selected = '') {
   const options = codes.map(code => ({ code, name: names.of(code) || code })).filter(item => item.name).sort((a, b) => a.name.localeCompare(b.name));
   return `<option value="">Select nationality</option>${options.map(item => `<option value="${escapeMarkup(item.name)}" ${item.name === selected ? 'selected' : ''}>${escapeMarkup(item.name)}</option>`).join('')}`;
 }
-function nationalityFieldMarkup(value = '') {
-  return `<label>Nationality<select name="nationality">${countryOptions(value)}</select></label>`;
+function nationalityFieldMarkup(value = '', required = false, label = 'Nationality') {
+  return `<label>${label}<select name="nationality" ${required ? 'required' : ''}>${countryOptions(value)}</select></label>`;
 }
 function customerEditor(record = {}) {
   const customer = {...record};
@@ -1569,6 +1590,7 @@ document.addEventListener('click', (event) => {
         customer: lead.customer,
         phone: lead.phone,
         email: lead.email,
+        nationality: lead.nationality,
         packageName: lead.packageName,
         travelDate: '',
         total: lead.value || '—',
@@ -1583,6 +1605,7 @@ document.addEventListener('click', (event) => {
       state.toast = '';
       render();
       document.body.insertAdjacentHTML('beforeend', quotationEditor(quotation));
+      document.querySelector('#quotationForm')?.setAttribute('data-from-lead', 'true');
       updateQuotationTotal(document.querySelector('#quotationForm'));
     }
     return;
@@ -2098,7 +2121,11 @@ function saveFormFieldConfigs(configs) {
 }
 function formFieldConfig(formId) {
   const configs = formFieldConfigs();
-  return configs[formId] || {hidden: [], custom: [], order: []};
+  const config = configs[formId] || {hidden: [], custom: [], order: []};
+  return {...config, required: Array.isArray(config.required) ? config.required : []};
+}
+function formElementId(form) {
+  return form?.getAttribute('id') || '';
 }
 function formFieldRecord(form) {
   const identifiers = ['id', 'orderId', 'productId', 'supplierId'];
@@ -2118,11 +2145,48 @@ function formFieldRecord(form) {
 function formFieldLabel(label) {
   const copy = label.cloneNode(true);
   copy.querySelectorAll('input,select,textarea,details,button').forEach(node => node.remove());
+  copy.querySelectorAll('.required-mark').forEach(node => node.remove());
   return copy.textContent.trim().replace(/\s+/g, ' ') || 'Custom field';
+}
+function requiredFieldControl(label, key) {
+  if (key === 'phoneCountryCode') return label.querySelector('input[type="tel"]') || label.querySelector('[name]');
+  if (key === 'selectedAddons') return null;
+  return label.querySelector('[name]');
+}
+function applyFormFieldRequirements(form, config) {
+  form.querySelectorAll('label').forEach(label => {
+    const fieldKey = label.querySelector('[name]')?.name;
+    if (!fieldKey) return;
+    if (fieldKey === 'selectedAddons' && !label.classList.contains('quotation-extra-field')) return;
+    const configured = config.required.includes(fieldKey);
+    if (fieldKey === 'selectedAddons' && label.classList.contains('quotation-extra-field')) {
+      label.dataset.requiredField = configured ? 'true' : 'false';
+    }
+    const control = requiredFieldControl(label, fieldKey);
+    const fixedRequired = control?.dataset.formFixedRequired === 'true' || (control && !control.dataset.formRequiredManaged && control.required);
+    if (control) {
+      if (fixedRequired) control.dataset.formFixedRequired = 'true';
+      control.dataset.formRequiredManaged = 'true';
+      control.required = Boolean(fixedRequired || configured);
+    }
+    const required = Boolean(fixedRequired || configured);
+    let mark = label.querySelector(':scope > .required-mark');
+    if (required && !mark) {
+      mark = document.createElement('span');
+      mark.className = 'required-mark';
+      mark.setAttribute('aria-hidden', 'true');
+      const directControl = [...label.children].find(child => child.matches('input,select,textarea,details,.phone-input-group'));
+      label.insertBefore(mark, directControl || null);
+    } else if (!required && mark) {
+      mark.remove();
+    }
+  });
 }
 function applyFormFieldOrder(form, order = []) {
   const grid = form?.querySelector('.editor-grid');
   if (!grid || !Array.isArray(order) || !order.length) return;
+  const extrasSlot = grid.querySelector(':scope > .quotation-extras-slot');
+  extrasSlot?.querySelectorAll(':scope > .quotation-extras > .quotation-extra-field').forEach(label => grid.insertBefore(label, extrasSlot));
   const labels = [...grid.querySelectorAll(':scope > label')];
   const byKey = new Map(labels.map(label => [label.querySelector('[name]')?.name, label]));
   const orderedKeys = [...order, ...labels.map(label => label.querySelector('[name]')?.name)]
@@ -2134,8 +2198,9 @@ function applyFormFieldOrder(form, order = []) {
 function enhanceFormFields(form) {
   // Payment records use a fixed finance form; field customization is only for
   // editable CRM forms and should not appear in the payment workflow.
-  if (!form?.id || form.id === 'fieldManager' || form.id === 'formFieldManager' || form.id === 'invoicePaymentForm') return;
-  const config = formFieldConfig(form.id);
+  const formId = formElementId(form);
+  if (!formId || formId === 'fieldManager' || formId === 'formFieldManager' || formId === 'invoicePaymentForm') return;
+  const config = formFieldConfig(formId);
   const grid = form.querySelector('.editor-grid');
   if (!grid) return;
   const record = formFieldRecord(form);
@@ -2149,6 +2214,11 @@ function enhanceFormFields(form) {
     grid.insertAdjacentHTML('beforeend', `<label data-custom-field="${escapeMarkup(field.key)}">${escapeMarkup(field.label)}${control}</label>`);
   });
   applyFormFieldOrder(form, config.order);
+  if (form.id === 'quotationForm' && form.dataset.fromLead === 'true') {
+    const currentKeys = [...grid.querySelectorAll(':scope > label')].map(label => label.querySelector('[name]')?.name).filter(Boolean);
+    applyFormFieldOrder(form, [...['id', 'customer', 'phone', 'email', 'nationality'], ...currentKeys]);
+  }
+  applyFormFieldRequirements(form, config);
   form.querySelectorAll('label').forEach(label => {
     const control = label.querySelector('[name]');
     if (!control) return;
@@ -2171,12 +2241,12 @@ function enhanceFormFields(form) {
   }
 }
 function formFieldManager(form) {
-  const config = formFieldConfig(form.id);
+  const formId = formElementId(form), config = formFieldConfig(formId);
   const fields = [...form.querySelectorAll('label')].map(label => {
     const control = label.querySelector('[name]');
-    return control ? {key: control.name, label: formFieldLabel(label), custom: Boolean(label.dataset.customField)} : null;
+    return control ? {key: control.name, label: formFieldLabel(label), required: config.required.includes(control.name) || Boolean(label.querySelector('[required]')), custom: Boolean(label.dataset.customField)} : null;
   }).filter(Boolean).filter((field, index, all) => all.findIndex(item => item.key === field.key) === index);
-  return `<div class="modal-backdrop" id="formFieldManager" data-form-id="${escapeMarkup(form.id)}"><section class="field-manager"><div class="modal-head"><div><span class="eyebrow">Form settings</span><h2>Setting</h2><p>Tarik field atau gunakan anak panah untuk ubah susunan.</p></div><button type="button" class="modal-close" data-close-form-field-manager>×</button></div><div class="field-manager-list">${fields.map((field, index) => `<div class="field-manager-row" draggable="true" data-form-field-row data-field-key="${escapeMarkup(field.key)}"><span class="drag-handle" title="Tarik untuk susun">☷</span><strong>${escapeMarkup(field.label)}</strong><small>${escapeMarkup(field.key)}</small><label class="field-toggle"><input type="checkbox" data-form-field-visible="${escapeMarkup(field.key)}" ${config.hidden.includes(field.key) ? '' : 'checked'} /> <span>Show</span></label><button type="button" class="field-move" data-form-field-move="up" ${index === 0 ? 'disabled' : ''} aria-label="Move ${escapeMarkup(field.label)} up">↑</button><button type="button" class="field-move" data-form-field-move="down" ${index === fields.length - 1 ? 'disabled' : ''} aria-label="Move ${escapeMarkup(field.label)} down">↓</button>${field.custom ? `<button type="button" class="field-move" data-delete-form-field="${escapeMarkup(field.key)}">Delete</button>` : ''}</div>`).join('')}</div><div class="add-field-row"><input data-form-field-label placeholder="Nama field baharu" /><select data-form-field-type><option value="text">Text</option><option value="number">Number</option><option value="date">Date</option><option value="textarea">Notes / Textarea</option></select><button type="button" class="ghost-btn" data-add-form-field>＋ Add field</button></div><div class="modal-actions"><button type="button" class="primary-btn" data-close-form-field-manager>Done</button></div></section></div>`;
+  return `<div class="modal-backdrop" id="formFieldManager" data-form-id="${escapeMarkup(formId)}"><section class="field-manager"><div class="modal-head"><div><span class="eyebrow">Form settings</span><h2>Setting</h2><p>Tarik field atau gunakan anak panah untuk ubah susunan.</p></div><button type="button" class="modal-close" data-close-form-field-manager>×</button></div><div class="field-manager-list">${fields.map((field, index) => `<div class="field-manager-row" draggable="true" data-form-field-row data-field-key="${escapeMarkup(field.key)}"><span class="drag-handle" title="Tarik untuk susun">☷</span><strong>${escapeMarkup(field.label)}${field.required ? ' <span class="required-mark" aria-hidden="true">*</span>' : ''}</strong><small>${escapeMarkup(field.key)}</small><label class="field-toggle"><input type="checkbox" data-form-field-visible="${escapeMarkup(field.key)}" ${config.hidden.includes(field.key) ? '' : 'checked'} /> <span>Show</span></label><label class="field-toggle"><input type="checkbox" data-form-field-required="${escapeMarkup(field.key)}" ${field.required ? 'checked' : ''} /> <span>Required</span></label><button type="button" class="field-move" data-form-field-move="up" ${index === 0 ? 'disabled' : ''} aria-label="Move ${escapeMarkup(field.label)} up">↑</button><button type="button" class="field-move" data-form-field-move="down" ${index === fields.length - 1 ? 'disabled' : ''} aria-label="Move ${escapeMarkup(field.label)} down">↓</button>${field.custom ? `<button type="button" class="field-move" data-delete-form-field="${escapeMarkup(field.key)}">Delete</button>` : ''}</div>`).join('')}</div><div class="add-field-row"><input data-form-field-label placeholder="Nama field baharu" /><select data-form-field-type><option value="text">Text</option><option value="number">Number</option><option value="date">Date</option><option value="textarea">Notes / Textarea</option></select><button type="button" class="ghost-btn" data-add-form-field>＋ Add field</button></div><div class="modal-actions"><button type="button" class="primary-btn" data-close-form-field-manager>Done</button></div></section></div>`;
 }
 function refreshFormFieldManager(formId) {
   const form = document.getElementById(formId);
@@ -2228,40 +2298,112 @@ document.addEventListener('click', event => {
     configs[formId] = config; saveFormFieldConfigs(configs); refreshFormFieldManager(formId);
   }
 });
+function formFieldDropOrder(manager, sourceKey, clientY) {
+  const rows = [...manager.querySelectorAll('[data-form-field-row]')];
+  const source = rows.find(row => row.dataset.fieldKey === sourceKey);
+  if (!source) return null;
+  const remaining = rows.filter(row => row !== source);
+  const insertionIndex = remaining.findIndex(row => clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
+  const order = remaining.map(row => row.dataset.fieldKey);
+  order.splice(insertionIndex < 0 ? order.length : insertionIndex, 0, sourceKey);
+  return order;
+}
+function highlightFormFieldDropTarget(manager, sourceKey, clientY) {
+  const rows = [...manager.querySelectorAll('[data-form-field-row]')];
+  const source = rows.find(row => row.dataset.fieldKey === sourceKey);
+  const target = rows.filter(row => row !== source).find(row => clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
+  manager.querySelectorAll('[data-form-field-row].drag-target').forEach(item => item.classList.remove('drag-target'));
+  target?.classList.add('drag-target');
+}
+function saveFormFieldDrop(manager, sourceKey, clientY) {
+  const order = formFieldDropOrder(manager, sourceKey, clientY);
+  if (!order) return;
+  const formId = manager.dataset.formId, configs = formFieldConfigs(), config = configs[formId] || {hidden: [], custom: []};
+  if (JSON.stringify(config.order || []) === JSON.stringify(order)) return;
+  config.order = order; configs[formId] = config; saveFormFieldConfigs(configs);
+  withFormFieldObserverPaused(() => { enhanceFormFields(document.getElementById(formId)); refreshFormFieldManager(formId); });
+}
+let pointerFormFieldDrag = null;
+let mouseFormFieldDrag = null;
+function beginFormFieldDrag(event) {
+  const row = event.target.closest('[data-form-field-row]'), manager = row?.closest('#formFieldManager');
+  if (!row || !manager || event.target.closest('button, input, select, textarea, a')) return;
+  if (event.type === 'mousedown' && event.button !== 0) return;
+  return {manager, row, pointerId: event.pointerId, sourceKey: row.dataset.fieldKey, startX: event.clientX, startY: event.clientY, active: false};
+}
+function moveFormFieldDrag(drag, event) {
+  if (!drag) return;
+  if (!drag.active && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 5) return;
+  drag.active = true;
+  event.preventDefault();
+  drag.manager.dataset.dragSourceKey = drag.sourceKey;
+  drag.row.classList.add('is-dragging');
+  highlightFormFieldDropTarget(drag.manager, drag.sourceKey, event.clientY);
+}
+function finishFormFieldDrag(drag, event) {
+  if (!drag) return;
+  if (drag.active) saveFormFieldDrop(drag.manager, drag.sourceKey, event.clientY);
+  drag.row.classList.remove('is-dragging');
+  delete drag.manager.dataset.dragSourceKey;
+  drag.manager.querySelectorAll('[data-form-field-row].drag-target').forEach(item => item.classList.remove('drag-target'));
+}
+document.addEventListener('pointerdown', event => {
+  pointerFormFieldDrag = beginFormFieldDrag(event);
+});
+document.addEventListener('pointermove', event => {
+  const drag = pointerFormFieldDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  moveFormFieldDrag(drag, event);
+});
+document.addEventListener('pointerup', event => {
+  const drag = pointerFormFieldDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  finishFormFieldDrag(drag, event);
+  pointerFormFieldDrag = null;
+});
+document.addEventListener('pointercancel', () => { pointerFormFieldDrag = null; });
+document.addEventListener('mousedown', event => { mouseFormFieldDrag = beginFormFieldDrag(event); });
+document.addEventListener('mousemove', event => { moveFormFieldDrag(mouseFormFieldDrag, event); });
+document.addEventListener('mouseup', event => { finishFormFieldDrag(mouseFormFieldDrag, event); mouseFormFieldDrag = null; });
 document.addEventListener('dragstart', event => {
   const row = event.target.closest('[data-form-field-row]');
   if (!row) return;
+  const manager = row.closest('#formFieldManager');
+  if (manager) manager.dataset.dragSourceKey = row.dataset.fieldKey;
   row.classList.add('is-dragging');
   event.dataTransfer?.setData('text/plain', row.dataset.fieldKey);
   if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
 });
 document.addEventListener('dragover', event => {
-  const row = event.target.closest('[data-form-field-row]');
-  if (!row) return;
+  const list = event.target.closest('.field-manager-list'), manager = list?.closest('#formFieldManager');
+  if (!list || !manager) return;
   event.preventDefault();
-  document.querySelectorAll('[data-form-field-row].drag-target').forEach(item => item.classList.remove('drag-target'));
-  row.classList.add('drag-target');
+  const sourceKey = event.dataTransfer?.getData('text/plain') || manager.dataset.dragSourceKey;
+  highlightFormFieldDropTarget(manager, sourceKey, event.clientY);
 });
 document.addEventListener('drop', event => {
-  const target = event.target.closest('[data-form-field-row]'), manager = target?.closest('#formFieldManager');
-  if (!target || !manager) return;
+  const list = event.target.closest('.field-manager-list'), manager = list?.closest('#formFieldManager');
+  if (!list || !manager) return;
   event.preventDefault();
-  const sourceKey = event.dataTransfer?.getData('text/plain'), rows = [...manager.querySelectorAll('[data-form-field-row]')];
-  const source = rows.find(row => row.dataset.fieldKey === sourceKey);
-  if (!source || source === target) return;
-  const order = rows.map(row => row.dataset.fieldKey), sourceIndex = order.indexOf(sourceKey), targetIndex = order.indexOf(target.dataset.fieldKey);
-  order.splice(sourceIndex, 1);
-  const insertionIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex;
-  order.splice(insertionIndex, 0, sourceKey);
-  const formId = manager.dataset.formId, configs = formFieldConfigs(), config = configs[formId] || {hidden: [], custom: []};
-  config.order = order; configs[formId] = config; saveFormFieldConfigs(configs);
-  withFormFieldObserverPaused(() => { enhanceFormFields(document.getElementById(formId)); refreshFormFieldManager(formId); });
+  const sourceKey = event.dataTransfer?.getData('text/plain') || manager.dataset.dragSourceKey;
+  saveFormFieldDrop(manager, sourceKey, event.clientY);
 });
 document.addEventListener('dragend', event => {
-  event.target.closest('[data-form-field-row]')?.classList.remove('is-dragging');
+  const row = event.target.closest('[data-form-field-row]'), manager = row?.closest('#formFieldManager');
+  row?.classList.remove('is-dragging');
+  if (manager) delete manager.dataset.dragSourceKey;
   document.querySelectorAll('[data-form-field-row].drag-target').forEach(item => item.classList.remove('drag-target'));
 });
 document.addEventListener('change', event => {
+  const required = event.target.closest('[data-form-field-required]');
+  if (required) {
+    const manager = required.closest('#formFieldManager'), formId = manager?.dataset.formId, key = required.dataset.formFieldRequired;
+    if (!formId || !key) return;
+    const configs = formFieldConfigs(), config = configs[formId] || {hidden: [], custom: [], order: []};
+    config.required = required.checked ? [...new Set([...(config.required || []), key])] : (config.required || []).filter(item => item !== key);
+    configs[formId] = config; saveFormFieldConfigs(configs);
+    enhanceFormFields(document.getElementById(formId)); refreshFormFieldManager(formId); return;
+  }
   const visible = event.target.closest('[data-form-field-visible]');
   if (!visible) return;
   const manager = visible.closest('#formFieldManager'), formId = manager?.dataset.formId, key = visible.dataset.formFieldVisible;
