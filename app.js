@@ -124,6 +124,15 @@ function dashboardDateInRange(value, range) {
   if (range === 'Custom Date') return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
   return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
 }
+function customerNationalityStats() {
+  const counts = new Map();
+  storedCustomers().forEach(customer => {
+    const nationality = String(customer.nationality || '').trim();
+    if (!nationality) return;
+    counts.set(nationality, (counts.get(nationality) || 0) + 1);
+  });
+  return [...counts.entries()].sort(([nameA, countA], [nameB, countB]) => countB - countA || nameA.localeCompare(nameB));
+}
 function dashboard() {
   const leads = storedLeads(), quotations = storedQuotations(), bookings = storedBookings(), invoices = storedInvoices();
   const scopedLeads = leads.filter(item => dashboardDateInRange(item.receivedDate, state.range));
@@ -145,8 +154,11 @@ function dashboard() {
   const completedTours = bookings.filter(isCompletedBooking);
   const salesComplete = completedTours.reduce((sum, item) => sum + bookingSalesValue(item), 0);
   const conversionRate = scopedLeads.length ? `${((won / scopedLeads.length) * 100).toFixed(1)}%` : '0.0%';
+  const nationalityStats = customerNationalityStats();
+  const maxNationality = Math.max(1, ...nationalityStats.map(([, count]) => count));
   const row = item => `<tr><td><strong>${item.orderId || '—'}</strong></td><td>${item.customer || '—'}</td><td>${packageDisplay(item.package || item.name)}</td><td>${formatTravelDate(item.startDate)}</td><td>${item.sales || '—'}</td><td><span class="status ${String(item.status || '').toLowerCase().replaceAll(' ','-')}">${item.status || '—'}</span></td></tr>`;
-  return `<section class="dashboard-view"><div class="metrics">${metric('New Leads',scopedLeads.filter(item => item.status === 'New Lead').length,'Current filter','teal')}${metric('Quotation',scopedQuotations.length,'Quotation dalam filter','blue')}${metric('Won',won,'Closed successfully','violet')}${metric('Conversion Rate',conversionRate,'New Leads → Won','green')}${metric('Sales Monthly',dashboardMoney(salesMonthly),'Invoice generated this month','violet')}${metric('Sales Complete',dashboardMoney(salesComplete),`${completedTours.length} completed tour${completedTours.length === 1 ? '' : 's'}`,'green')}${metric('Cash Collected',dashboardMoney(cashCollected),'Payments received','amber')}${metric('Outstanding',dashboardMoney(outstanding),`${invoices.filter(item => invoicePaymentState(item).balance > 0).length} invoices need follow-up`,'red')}${metric('Upcoming Trips',upcoming.length,'Next 30 days','green')}</div><div class="dashboard-grid"><div class="main-column"><article class="panel funnel-panel"><div class="panel-head"><div><h2>Sales funnel</h2><p>Data sebenar mengikut ${state.range.toLowerCase()}</p></div><button class="ghost-btn" data-nav="pipeline">View pipeline <span>→</span></button></div><div class="funnel">${[['Leads',funnel.leads,'teal'],['Quotation',funnel.quotation,'blue'],['Booking',funnel.booking,'violet'],['Confirmed',funnel.confirmed,'amber']].map(([label,value]) => `<div class="funnel-row"><span>${label}</span><div class="bar"><i style="width:${Math.round(value / maxFunnel * 100)}%"></i></div><b>${value}</b></div>`).join('')}</div></article><article class="panel"><div class="panel-head"><div><h2>Recent bookings</h2><p>Booking terbaru dalam source of truth</p></div><button class="ghost-btn" data-nav="bookings">View all <span>→</span></button></div><div class="table-wrap"><table><thead><tr><th>Booking</th><th>Customer</th><th>Package</th><th>Travel date</th><th>Value</th><th>Status</th></tr></thead><tbody>${recent.length ? recent.map(row).join('') : '<tr><td colspan="6" class="empty-cell">Tiada booking.</td></tr>'}</tbody></table></div></article></div><aside class="side-column"><article class="panel attention"><div class="panel-head"><div><h2>Needs attention</h2><p>Tindakan berdasarkan rekod semasa</p></div><span class="count-badge">${invoices.filter(item => invoicePaymentState(item).balance > 0).length + followups.length + upcomingWeek.length}</span></div><div class="attention-list"><div><span class="attention-icon red-bg">!</span><section><strong>Outstanding payment</strong><small>${invoices.filter(item => invoicePaymentState(item).balance > 0).length} invoice belum selesai</small></section><b data-nav="outstanding">→</b></div><div><span class="attention-icon amber-bg">◷</span><section><strong>Follow-ups due</strong><small>${followups.length} follow-up perlu tindakan</small></section><b data-nav="followups">→</b></div><div><span class="attention-icon blue-bg">⌂</span><section><strong>Trips this week</strong><small>${upcomingWeek.length} booking perlu persediaan</small></section><b data-nav="upcoming">→</b></div></div></article><article class="panel mini-calendar"><div class="panel-head"><div><h2>Upcoming travel</h2><p>Next 7 days</p></div></div>${upcomingWeek.length ? upcomingWeek.map(item => { const date = parseBookingDate(item.startDate); return `<div class="trip"><span class="date-box"><b>${String(date.getDate()).padStart(2,'0')}</b><small>${new Intl.DateTimeFormat('en',{month:'short'}).format(date).toUpperCase()}</small></span><section><strong>${packageDisplay(item.package || item.name)}</strong><small>${item.customer || 'Customer'} · ${item.adult || 0} travellers</small></section><span class="teal-tag">${item.status || 'Ready'}</span></div>`; }).join('') : '<div class="empty-bookings">Tiada perjalanan dalam 7 hari.</div>'}</article></aside></div></section>`;
+  const nationalityPanel = nationalityStats.length ? nationalityStats.map(([nationality, count]) => `<div class="nationality-row"><span>${escapeMarkup(nationality)}</span><div class="nationality-bar"><i style="width:${Math.round(count / maxNationality * 100)}%"></i></div><b>${count}</b></div>`).join('') : '<div class="empty-bookings">Tiada data nationality.</div>';
+  return `<section class="dashboard-view"><div class="metrics">${metric('New Leads',scopedLeads.filter(item => item.status === 'New Lead').length,'Current filter','teal')}${metric('Quotation',scopedQuotations.length,'Quotation dalam filter','blue')}${metric('Won',won,'Closed successfully','violet')}${metric('Conversion Rate',conversionRate,'New Leads → Won','green')}${metric('Sales Monthly',dashboardMoney(salesMonthly),'Invoice generated this month','violet')}${metric('Sales Complete',dashboardMoney(salesComplete),`${completedTours.length} completed tour${completedTours.length === 1 ? '' : 's'}`,'green')}${metric('Cash Collected',dashboardMoney(cashCollected),'Payments received','amber')}${metric('Outstanding',dashboardMoney(outstanding),`${invoices.filter(item => invoicePaymentState(item).balance > 0).length} invoices need follow-up`,'red')}${metric('Upcoming Trips',upcoming.length,'Next 30 days','green')}</div><div class="dashboard-grid"><div class="main-column"><article class="panel funnel-panel"><div class="panel-head"><div><h2>Sales funnel</h2><p>Data sebenar mengikut ${state.range.toLowerCase()}</p></div><button class="ghost-btn" data-nav="pipeline">View pipeline <span>→</span></button></div><div class="funnel">${[['Leads',funnel.leads,'teal'],['Quotation',funnel.quotation,'blue'],['Booking',funnel.booking,'violet'],['Confirmed',funnel.confirmed,'amber']].map(([label,value]) => `<div class="funnel-row"><span>${label}</span><div class="bar"><i style="width:${Math.round(value / maxFunnel * 100)}%"></i></div><b>${value}</b></div>`).join('')}</div></article><article class="panel"><div class="panel-head"><div><h2>Recent bookings</h2><p>Booking terbaru dalam source of truth</p></div><button class="ghost-btn" data-nav="bookings">View all <span>→</span></button></div><div class="table-wrap"><table><thead><tr><th>Booking</th><th>Customer</th><th>Package</th><th>Travel date</th><th>Value</th><th>Status</th></tr></thead><tbody>${recent.length ? recent.map(row).join('') : '<tr><td colspan="6" class="empty-cell">Tiada booking.</td></tr>'}</tbody></table></div></article></div><aside class="side-column"><article class="panel attention"><div class="panel-head"><div><h2>Needs attention</h2><p>Tindakan berdasarkan rekod semasa</p></div><span class="count-badge">${invoices.filter(item => invoicePaymentState(item).balance > 0).length + followups.length + upcomingWeek.length}</span></div><div class="attention-list"><div><span class="attention-icon red-bg">!</span><section><strong>Outstanding payment</strong><small>${invoices.filter(item => invoicePaymentState(item).balance > 0).length} invoice belum selesai</small></section><b data-nav="outstanding">→</b></div><div><span class="attention-icon amber-bg">◷</span><section><strong>Follow-ups due</strong><small>${followups.length} follow-up perlu tindakan</small></section><b data-nav="followups">→</b></div><div><span class="attention-icon blue-bg">⌂</span><section><strong>Trips this week</strong><small>${upcomingWeek.length} booking perlu persediaan</small></section><b data-nav="upcoming">→</b></div></div></article><article class="panel mini-calendar"><div class="panel-head"><div><h2>Upcoming travel</h2><p>Next 7 days</p></div></div>${upcomingWeek.length ? upcomingWeek.map(item => { const date = parseBookingDate(item.startDate); return `<div class="trip"><span class="date-box"><b>${String(date.getDate()).padStart(2,'0')}</b><small>${new Intl.DateTimeFormat('en',{month:'short'}).format(date).toUpperCase()}</small></span><section><strong>${packageDisplay(item.package || item.name)}</strong><small>${item.customer || 'Customer'} · ${item.adult || 0} travellers</small></section><span class="teal-tag">${item.status || 'Ready'}</span></div>`; }).join('') : '<div class="empty-bookings">Tiada perjalanan dalam 7 hari.</div>'}</article><article class="panel nationality-panel"><div class="panel-head"><div><h2>Customer nationality</h2><p>Jumlah customer mengikut nationality</p></div></div><div class="nationality-list">${nationalityPanel}</div></article></aside></div></section>`;
 }
 
 function localDateKey(offset = 0) {
@@ -214,7 +226,6 @@ function persistLeadForm(form) {
   const index = leads.findIndex(item => item.id === originalId);
   if (index >= 0) leads[index] = {...leads[index], ...lead}; else leads.push(lead);
   localStorage.setItem('milas-leads', JSON.stringify(leads));
-  syncLeadToCustomer(lead);
 }
 function handleLeadSubmit(event) {
   event.preventDefault();
@@ -298,6 +309,41 @@ function convertQuotationToInvoice(quotation) {
   }
   return invoice;
 }
+
+function assignFieldMarkup(value = '', required = true) {
+  const requiredMark = required ? ' <span class="required-mark" aria-hidden="true">*</span>' : '';
+  const staff = registeredStaff();
+  return '<label>Assign' + requiredMark + '<select name="assignee" ' + (required ? 'required' : '') + '><option value="">Pilih staff...</option>' + staff.map(name => '<option value="' + escapeMarkup(name) + '" ' + (value === name ? 'selected' : '') + '>' + escapeMarkup(name) + '</option>').join('') + (value && !staff.includes(value) ? '<option selected value="' + escapeMarkup(value) + '">Existing — ' + escapeMarkup(value) + '</option>' : '') + '</select></label>';
+}
+function ensureQuotationAssignment(form) {
+  if (!form || form.querySelector('[name="assignee"]')) return;
+  const idLabel = form.querySelector('label:has([name="id"])');
+  const record = formFieldRecord(form);
+  if (idLabel) {
+    idLabel.insertAdjacentHTML('afterend', assignFieldMarkup(record.assignee || '', true));
+    const moveAssignmentAfterId = () => {
+      const assignment = form.querySelector('label:has([name="assignee"])');
+      if (!assignment || idLabel.nextElementSibling === assignment) return;
+      withFormFieldObserverPaused(() => idLabel.after(assignment));
+    };
+    moveAssignmentAfterId();
+    setTimeout(() => { if (form.isConnected) moveAssignmentAfterId(); }, 0);
+  }
+}
+function ensureLeadAssignment(form) {
+  if (!form || form.querySelector('[name="assignee"]')) return;
+  const idLabel = form.querySelector('label:has([name="id"])');
+  const record = formFieldRecord(form);
+  if (!idLabel) return;
+  idLabel.insertAdjacentHTML('afterend', assignFieldMarkup(record.assignee || '', true));
+  const moveAssignmentAfterId = () => {
+    const assignment = form.querySelector('label:has([name="assignee"])');
+    if (!assignment || idLabel.nextElementSibling === assignment) return;
+    withFormFieldObserverPaused(() => idLabel.after(assignment));
+  };
+  moveAssignmentAfterId();
+  setTimeout(() => { if (form.isConnected) moveAssignmentAfterId(); }, 0);
+}
 // Company payment details shared by invoice preview and PDF.
 const invoiceBankDetails = Object.freeze({
   bankName: 'PUBLIC BANK',
@@ -320,7 +366,8 @@ function invoicePdfMarkup({data, bankDetails = invoiceBankDetails}) {
 function invoicePreview(data) {
   const previewDocument = invoicePdfMarkup({data}).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
   const printable = encodeURIComponent(JSON.stringify({data}));
-  return `<div class="modal-backdrop" id="invoicePreviewModal"><article class="booking-modal quotation-preview"><div class="modal-head"><div><span class="eyebrow">Invoice preview</span><h2>${data.id || 'Invoice'}</h2><p>Invoice draft berjaya dijana daripada quotation.</p></div><button type="button" class="modal-close" data-close-invoice-preview>×</button></div><iframe class="quotation-a4-frame" title="A4 invoice preview" srcdoc="${previewDocument}"></iframe><div class="modal-actions"><button type="button" class="ghost-btn" data-close-invoice-preview>Back</button><button type="button" class="primary-btn" data-print-invoice="${printable}">Save as PDF</button></div></article></div>`;
+  const assignee = data.assignee || data.quotationSnapshot?.assignee || '';
+  return `<div class="modal-backdrop" id="invoicePreviewModal"><form class="booking-modal quotation-preview" id="invoiceForm" data-invoice-id="${escapeMarkup(data.id || '')}"><div class="modal-head"><div><span class="eyebrow">Invoice preview</span><h2>${data.id || 'Invoice'}</h2><p>Invoice draft berjaya dijana daripada quotation.</p></div><button type="button" class="modal-close" data-close-invoice-preview>×</button></div><div class="editor-grid invoice-assignment">${assignFieldMarkup(assignee, true)}</div><iframe class="quotation-a4-frame" title="A4 invoice preview" srcdoc="${previewDocument}"></iframe><div class="modal-actions"><button type="button" class="ghost-btn" data-close-invoice-preview>Back</button><button type="button" class="primary-btn" data-print-invoice="${printable}">Save as PDF</button><button type="submit" class="primary-btn">Save invoice</button></div></form></div>`;
 }
 function invoicePaymentState(invoice) {
   const total = Number(String(invoice.total || '0').replace(/[^0-9.-]/g, '') || 0);
@@ -345,7 +392,11 @@ function recordPaymentModal() {
   return '<div class="modal-backdrop" id="invoicePaymentModal"><form class="booking-modal" id="invoicePaymentForm" data-invoice="' + firstPayload + '" data-invoice-total="' + summary.total.toFixed(2) + '" data-previous-outstanding="' + summary.balance.toFixed(2) + '"><div class="modal-head"><div><span class="eyebrow">Record payment</span><h2>Invoice payment</h2><p>Pilih invoice dan rekod bayaran seterusnya.</p></div><button type="button" class="modal-close" data-close-invoice-payment>×</button></div><div class="editor-grid">' + (invoices.length ? '<label>Invoice<select name="invoiceId" data-payment-invoice>' + options + '</select></label>' + paymentFields(summary) : '<p class="empty-bookings">Tiada invoice outstanding untuk direkodkan.</p>') + '</div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-invoice-payment>Cancel</button>' + (invoices.length ? '<button type="submit" class="primary-btn">Save payment</button>' : '') + '</div></form></div>';
 }
 function updateInvoicePaymentSummary(form) {
-  const outstanding = Number(form.dataset.previousOutstanding || 0);
+  const invoice = (() => {
+    try { return JSON.parse(decodeURIComponent(form.dataset.invoice || '')); } catch { return null; }
+  })();
+  const invoiceSummary = invoice ? invoicePaymentState(invoice) : null;
+  const outstanding = Number(form.dataset.previousOutstanding || invoiceSummary?.balance || 0);
   const type = form.querySelector('[name="paymentType"]')?.value;
   const amountInput = form.querySelector('[name="paymentAmount"]');
   const balanceInput = form.querySelector('[name="balancePayment"]');
@@ -362,18 +413,18 @@ function updateInvoicePaymentSummary(form) {
 function recordInvoicePayment(invoice, paymentType, paymentAmount) {
   const invoices = storedInvoices(), current = invoices.find(item => item.id === invoice.id);
   if (!current) return false;
-  const summary = invoicePaymentState(current), amount = Number(paymentAmount || 0);
-  if (!Number.isFinite(amount) || amount <= 0 || amount > summary.balance || (paymentType === 'full' && amount !== summary.balance)) return false;
+  const summary = invoicePaymentState(current), outstanding = Number(summary.balance.toFixed(2)), amount = Number(Number(paymentAmount || 0).toFixed(2));
+  if (!Number.isFinite(amount) || amount <= 0 || amount > outstanding || (paymentType === 'full' && amount !== outstanding)) return false;
   const paymentLabel = paymentType === 'full' ? 'Full payment' : 'Deposit paid';
-  const entry = { amount: Number(amount.toFixed(2)), paymentType, paymentLabel, paidAt: new Date().toISOString(), previousOutstanding: Number(summary.balance.toFixed(2)), balance: Number((summary.balance - amount).toFixed(2)) };
-  const history = [...summary.history, entry], newBalance = Math.max(0, summary.balance - amount);
+  const entry = { amount, paymentType, paymentLabel, paidAt: new Date().toISOString(), previousOutstanding: outstanding, balance: Number((outstanding - amount).toFixed(2)) };
+  const history = [...summary.history, entry], newBalance = Math.max(0, Number((outstanding - amount).toFixed(2)));
   Object.assign(current, { paymentType, paymentStatus: newBalance === 0 ? 'Full payment' : paymentLabel, paymentAmount: (summary.paid + amount).toFixed(2), balancePayment: newBalance.toFixed(2), paymentHistory: history, status: newBalance === 0 ? 'Paid' : paymentLabel, paidAt: entry.paidAt });
   localStorage.setItem('milas-invoices', JSON.stringify(invoices));
   const leads = storedLeads(), lead = leads.find(item => item.id === current.leadId || item.id === current.quotationSnapshot?.leadId);
   if (lead) { lead.status = 'Won'; localStorage.setItem('milas-leads', JSON.stringify(leads)); }
   const bookings = storedBookings(), booking = bookings.find(item => item.invoiceId === current.id);
   if (booking) { booking.payment = paymentLabel + ' (RM ' + amount.toFixed(2) + ')'; booking.paymentAmount = current.paymentAmount; booking.balancePayment = newBalance.toFixed(2); persistSharedCollection('bookings', bookings); }
-  else { bookings.unshift({ status: 'NEW ORDER', name: (current.packageName || 'Invoice') + ' — ' + current.id, bookingDate: new Date().toLocaleDateString('en-GB'), startDate: current.travelDate || '', assignee: 'Afiq Milas', channel: 'Quotation', supplier: 'Pending', type: 'Multi Day', customer: current.customer || '', package: current.packageName || '', adult: current.adults || '0', children: current.children || '0', sales: 'RM ' + summary.total.toFixed(2), payment: paymentLabel + ' (RM ' + amount.toFixed(2) + ')', paymentAmount: current.paymentAmount, balancePayment: newBalance.toFixed(2), email: current.email || '', orderId: nextBookingId(bookings), proof: 'Attached', invoice: current.id, invoiceId: current.id, commission: '5%' }); persistSharedCollection('bookings', bookings); }
+  else { bookings.unshift({ status: 'NEW ORDER', name: (current.packageName || 'Invoice') + ' — ' + current.id, bookingDate: new Date().toLocaleDateString('en-GB'), startDate: current.travelDate || '', assignee: current.assignee || current.quotationSnapshot?.assignee || '', channel: 'Quotation', supplier: 'Pending', type: 'Multi Day', customer: current.customer || '', package: current.packageName || '', adult: current.adults || '0', children: current.children || '0', sales: 'RM ' + summary.total.toFixed(2), payment: paymentLabel + ' (RM ' + amount.toFixed(2) + ')', paymentAmount: current.paymentAmount, balancePayment: newBalance.toFixed(2), email: current.email || '', orderId: nextBookingId(bookings), proof: 'Attached', invoice: current.id, invoiceId: current.id, commission: '5%' }); persistSharedCollection('bookings', bookings); }
   const syncedBooking = bookings.find(item => item.invoiceId === current.id);
   if (syncedBooking) {
     syncedBooking.sales = 'RM ' + summary.total.toFixed(2);
@@ -810,6 +861,11 @@ function formatTravelDate(value) {
   }
   return value || '—';
 }
+function dateInputValue(value) {
+  const date = parseBookingDate(value);
+  if (!date) return '';
+  return [date.getFullYear(), date.getMonth() + 1, date.getDate()].map((part, index) => index === 0 ? String(part) : String(part).padStart(2, '0')).join('-');
+}
 function syncBookingStatuses(records) {
   const today = new Date();
   let changed = false;
@@ -838,6 +894,7 @@ function invoiceBookingFields(invoice, summary) {
   const source = {...(invoice.quotationSnapshot || {}), ...invoice};
   const packageName = source.packageName || 'Invoice';
   return {
+    assignee: source.assignee || '',
     customer: source.customer || '',
     phone: source.phone || '',
     email: source.email || '',
@@ -880,7 +937,7 @@ function reconcileInvoiceBookings(records) {
       name: packageName + ' — ' + invoice.id,
       bookingDate: invoice.issuedAt ? new Intl.DateTimeFormat('en-GB').format(new Date(invoice.issuedAt)) : new Date().toLocaleDateString('en-GB'),
       startDate: invoice.travelDate || '',
-      assignee: 'Afiq Milas',
+      assignee: invoice.assignee || invoice.quotationSnapshot?.assignee || '',
       channel: 'Quotation',
       supplier: 'Pending',
       type: 'Multi Day',
@@ -1082,9 +1139,9 @@ function bookingEditor(record = {}) {
     : key === 'channel'
     ? '<label>Source<select name="channel"><option value="">Pilih source...</option>' + bookingSources().map(source => '<option value="' + source + '" ' + (record.channel===source ? 'selected' : '') + '>' + source + '</option>').join('') + (record.channel && !bookingSources().includes(record.channel) ? '<option selected value="' + record.channel + '">Existing — ' + record.channel + '</option>' : '') + '</select></label>'
     : key === 'assignee'
-    ? '<label>Assignee<select name="assignee"><option value="">Pilih staff...</option>' + registeredStaff().map(staff => '<option value="' + staff + '" ' + (record.assignee===staff ? 'selected' : '') + '>' + staff + '</option>').join('') + '</select></label>'
+    ? assignFieldMarkup(record.assignee, true)
     : key === 'startDate'
-    ? '<label>Start date<input type="date" name="startDate" value="' + (/^\d{4}-\d{2}-\d{2}$/.test(record.startDate||'') ? record.startDate : '') + '" min="' + todayIso() + '" required /></label>'
+    ? '<label>Start date<input type="date" name="startDate" value="' + dateInputValue(record.startDate || record.travelDate) + '" min="' + todayIso() + '" required /></label>'
     : key === 'phone'
     ? phoneFieldMarkup('phone', label, record.phone)
     : key === 'package'
@@ -1097,7 +1154,7 @@ function bookingEditor(record = {}) {
 
 function fieldManager() {
   const fields = getBookingFields();
-  return `<div class="modal-backdrop" id="fieldManager"><section class="field-manager"><div class="modal-head"><div><span class="eyebrow">New Booking</span><h2>Susun borang</h2><p>Tarik field secara bebas untuk ubah susunan.</p></div><button type="button" class="modal-close" data-close-fields>×</button></div><div class="field-manager-list">${fields.map(([key,label,visible],i)=>`<div class="field-manager-row" draggable="true" data-field-row data-field-index="${i}"><span class="drag-handle">☷</span><strong>${label}</strong><small>${key==='orderId'?'System field':''}</small><label class="field-toggle"><input type="checkbox" data-field-toggle="${key}" ${key==='orderId'||visible!==false?'checked':''} ${key==='orderId'?'disabled':''} /> <span>Show</span></label><button class="field-move" data-field-move="up" data-field-index="${i}" ${i===0?'disabled':''}>↑</button><button class="field-move" data-field-move="down" data-field-index="${i}" ${i===fields.length-1?'disabled':''}>↓</button></div>`).join('')}</div><div class="add-field-row"><input id="newFieldName" placeholder="New field name, e.g. Hotel / Room type" /><button class="ghost-btn" data-add-field>＋ Add field</button></div><div class="modal-actions"><button type="button" class="primary-btn" data-close-fields>Done</button></div></section></div>`;
+  return `<div class="modal-backdrop" id="fieldManager"><section class="field-manager"><div class="modal-head"><div><span class="eyebrow">New Booking</span><h2>Susun borang</h2><p>Tarik field secara bebas untuk ubah susunan.</p></div><button type="button" class="modal-close" data-close-fields>×</button></div><div class="field-manager-list">${fields.map(([key,label,visible],i)=>`<div class="field-manager-row" draggable="true" data-field-row data-field-index="${i}"><span class="drag-handle">☷</span><strong>${label}${key==='assignee'?' <span class="required-mark" aria-hidden="true">*</span>':''}</strong><small>${key==='orderId'||key==='assignee'?'System field':''}</small><label class="field-toggle"><input type="checkbox" data-field-toggle="${key}" ${key==='orderId'||key==='assignee'||visible!==false?'checked':''} ${key==='orderId'||key==='assignee'?'disabled':''} /> <span>Show</span></label><button class="field-move" data-field-move="up" data-field-index="${i}" ${i===0?'disabled':''}>↑</button><button class="field-move" data-field-move="down" data-field-index="${i}" ${i===fields.length-1?'disabled':''}>↓</button></div>`).join('')}</div><div class="add-field-row"><input id="newFieldName" placeholder="New field name, e.g. Hotel / Room type" /><button class="ghost-btn" data-add-field>＋ Add field</button></div><div class="modal-actions"><button type="button" class="primary-btn" data-close-fields>Done</button></div></section></div>`;
 }
 function allBookingsViewV3() {
   const records = storedBookings();
@@ -1105,10 +1162,14 @@ function allBookingsViewV3() {
   return `<section class="all-bookings"><div class="booking-toolbar"><div class="search-field">⌕ <input placeholder="Search bookings..." /></div><button class="view-control">▤ View: List</button><button class="view-control">▦ Group by: Status</button><button class="view-control">Filter</button><span class="toolbar-spacer"></span></div>${groups.map(status=>{const rows=records.filter(r=>r.status===status);return `<article class="booking-status-group ${status==='ON GOING'?'expanded':''}"><button class="status-group-heading"><span class="status-caret">${status==='ON GOING'?'⌄':'›'}</span><span class="booking-status ${status==='COMPLETE'?'complete':status==='CANCEL'?'cancel':status==='ON GOING'?'ongoing':status==='CONFIRMED'?'confirmed':'new-order'}"><b>●</b>${status}</span><span class="booking-count">${bookingCount(records, status)}</span><span class="status-actions">••• &nbsp;＋</span></button><div class="booking-grid-wrap"><table class="clickup-booking-table"><thead><tr>${['Name','Booking Date','Start date','Assignee','Channel Platform','Supplier Confirmation','Type','Customer','Package','Adult','Children','Sales Amount','Payment','Email','OrderID','Order Proof/Payment','Invoice','Comm 5%'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr data-edit-booking="${encodeURIComponent(JSON.stringify(r))}"><td><span class="booking-check">✓</span><strong>${r.name}</strong></td><td>${r.bookingDate}</td><td>${r.startDate}</td><td>${r.assignee}</td><td><span class="field-chip pink">${r.channel}</span></td><td><span class="field-chip ${r.supplier==='Confirm'?'green':'yellow'}">${r.supplier}</span></td><td><span class="field-chip blue">${r.type}</span></td><td>${r.customer||'—'}</td><td>${r.package||'—'}</td><td>${r.adult||'—'}</td><td>${r.children||'—'}</td><td>${r.sales||'—'}</td><td>${r.payment||'—'}</td><td>${r.email||'—'}</td><td>${r.orderId||'—'}</td><td class="clip">${r.proof||'⌕'}</td><td class="clip">${r.invoice||'⌕'}</td><td>${r.commission||'—'}</td></tr>`).join(''):`<tr><td colspan="18" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task" data-new-booking>＋ Add Task</button></div></article>`;}).join('')}</section>`;
 }
 
-const defaultBookingFields = [['orderId','Booking ID'],['name','Booking name'],['bookingDate','Booking date'],['startDate','Start date'],['assignee','Assignee'],['channel','Channel platform'],['supplier','Supplier confirmation'],['type','Type'],['customer','Customer'],['phone','Phone number'],['email','Email'],['nationality','Nationality'],['package','Package'],['optionalPackage','Optional package'],['addOns','Add-ons'],['adult','Adults'],['children','Children'],['infant','Infants'],['singleSupplement','Single supplement'],['discount','Discount'],['sales','Sales amount'],['payment','Status payment'],['paymentAmount','Amount payment'],['amountOutstanding','Amount outstanding'],['total','Total'],['proof','Order proof / payment'],['invoice','Invoice'],['commission','Commission 5%']];
+const defaultBookingFields = [['orderId','Booking ID'],['assignee','Assign'],['name','Booking name'],['bookingDate','Booking date'],['startDate','Start date'],['channel','Channel platform'],['supplier','Supplier confirmation'],['type','Type'],['customer','Customer'],['phone','Phone number'],['email','Email'],['nationality','Nationality'],['package','Package'],['optionalPackage','Optional package'],['addOns','Add-ons'],['adult','Adults'],['children','Children'],['infant','Infants'],['singleSupplement','Single supplement'],['discount','Discount'],['sales','Sales amount'],['payment','Status payment'],['paymentAmount','Amount payment'],['amountOutstanding','Amount outstanding'],['total','Total'],['proof','Order proof / payment'],['invoice','Invoice'],['commission','Commission 5%']];
 function getStoredBookingFields() { try { const fields = JSON.parse(localStorage.getItem('milas-booking-fields') || 'null') || defaultBookingFields.map(field => [...field]); const salesIndex = fields.findIndex(([key]) => key === 'sales'); const customerIndex = fields.findIndex(([key]) => key === 'customer'); if (!fields.some(([key]) => key === 'phone')) fields.splice(customerIndex >= 0 ? customerIndex + 1 : fields.length, 0, ['phone', 'Phone number', true]); if (!fields.some(([key]) => key === 'infant')) fields.splice(salesIndex >= 0 ? salesIndex : fields.length, 0, ['infant', 'Infants', true]); if (!fields.some(([key]) => key === 'discount') && !fields.some(([, label]) => /discount/i.test(label))) fields.splice(salesIndex >= 0 ? salesIndex : fields.length, 0, ['discount', 'Discount', true]); return fields; } catch { return defaultBookingFields.map(field => [...field]); } }
 function getBookingFields() {
   const fields = getStoredBookingFields();
+  const assignIndex = fields.findIndex(([key]) => key === 'assignee');
+  if (assignIndex >= 0) fields.splice(assignIndex, 1);
+  const orderIndex = fields.findIndex(([key]) => key === 'orderId');
+  fields.splice(orderIndex >= 0 ? orderIndex + 1 : 0, 0, ['assignee', 'Assign', true]);
   const requiredFields = [['nationality', 'Nationality'], ['optionalPackage', 'Optional package'], ['addOns', 'Add-ons'], ['singleSupplement', 'Single supplement'], ['paymentAmount', 'Amount payment'], ['amountOutstanding', 'Amount outstanding'], ['total', 'Total']];
   requiredFields.forEach(([key, label]) => { if (!fields.some(([fieldKey]) => fieldKey === key)) fields.push([key, label, true]); });
   return fields;
@@ -1274,24 +1335,24 @@ function nextCustomerId(customers) {
 function customerFromRecord(record, existing = {}) {
   return {
     ...existing,
-    fullName: existing.fullName || record.customer || record.name || '',
-    phone: existing.phone || record.phone || record.contactPhone || record.whatsapp || '',
-    whatsapp: existing.whatsapp || record.whatsapp || record.phone || record.contactPhone || '',
-    email: existing.email || record.email || '',
-    nationality: existing.nationality || record.nationality || '',
+    fullName: record.customer || record.name || existing.fullName || '',
+    phone: record.phone || record.contactPhone || record.whatsapp || existing.phone || '',
+    whatsapp: record.whatsapp || record.phone || record.contactPhone || existing.whatsapp || '',
+    email: record.email || existing.email || '',
+    nationality: record.nationality || existing.nationality || '',
   };
 }
-function syncLeadToCustomer(lead) {
-  const fullName = String(lead.customer || '').trim();
+function syncRecordToCustomer(record, sourceField, sourceId) {
+  const fullName = String(record.customer || record.name || '').trim();
   if (!fullName) return;
   const customers = storedCustomers();
   const normalise = value => String(value || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
-  const email = normalise(lead.email), phone = normalise(lead.phone);
-  const existing = customers.find(customer => customer.sourceLeadId === lead.id)
+  const email = normalise(record.email), phone = normalise(record.phone);
+  const existing = customers.find(customer => sourceField && sourceId && customer[sourceField] === sourceId)
     || customers.find(customer => (email && normalise(customer.email) === email) || (phone && normalise(customer.phone) === phone))
     || customers.find(customer => normalise(customer.fullName) === normalise(fullName));
   const now = new Date().toISOString();
-  const customer = {...customerFromRecord(lead, existing || {}), sourceLeadId: lead.id, updatedAt: now};
+  const customer = {...customerFromRecord(record, existing || {}), ...(sourceField && sourceId ? {[sourceField]: sourceId} : {}), updatedAt: now};
   if (existing) {
     Object.assign(existing, customer);
   } else {
@@ -1299,31 +1360,18 @@ function syncLeadToCustomer(lead) {
   }
   localStorage.setItem('milas-customers', JSON.stringify(customers));
 }
+function syncBookingToCustomer(booking) {
+  syncRecordToCustomer(booking, 'sourceBookingId', booking.orderId);
+}
 function storedCustomers() {
   try {
     const saved = JSON.parse(localStorage.getItem('milas-customers') || 'null');
     if (Array.isArray(saved)) return saved;
   } catch {}
-  const sources = [
-    ...storedLeads(),
-    ...storedQuotations(),
-    ...storedInvoices(),
-    ...storedBookings(),
-  ];
-  const customers = [];
-  sources.forEach(record => {
-    const name = String(record.customer || record.name || '').trim();
-    if (!name || name.includes('—')) return;
-    const key = name.toLowerCase();
-    const existing = customers.find(customer => customer.fullName.toLowerCase() === key);
-    if (existing) Object.assign(existing, customerFromRecord(record, existing));
-    else customers.push({...customerFromRecord(record), id: `CUS-${String(customers.length + 1).padStart(5, '0')}`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()});
-  });
-  localStorage.setItem('milas-customers', JSON.stringify(customers));
-  return customers;
+  return [];
 }
-function syncStoredLeadsToCustomers() {
-  storedLeads().filter(lead => String(lead.customer || '').trim()).forEach(syncLeadToCustomer);
+function syncStoredBookingsToCustomers() {
+  storedBookings().filter(booking => String(booking.customer || '').trim()).forEach(syncBookingToCustomer);
 }
 function customerMetrics(customer) {
   const name = String(customer.fullName || '').trim().toLowerCase();
@@ -1333,7 +1381,7 @@ function customerMetrics(customer) {
   return { bookings: bookings.length, balance };
 }
 function customerView() {
-  syncStoredLeadsToCustomers();
+  syncStoredBookingsToCustomers();
   const customers = storedCustomers();
   return `<article class="panel list-panel customers-list"><div class="toolbar"><div class="search-field">⌕ <input placeholder="Search customers..." /></div><button class="ghost-btn" data-action="filter">Filter</button></div><div class="table-wrap"><table><thead><tr><th>Customer ID</th><th>Customer</th><th>Phone number</th><th>Email</th><th>Nationality</th><th>Bookings</th><th>Outstanding</th><th></th></tr></thead><tbody>${customers.length ? customers.map(customer => { const metrics = customerMetrics(customer); return `<tr><td class="id-cell">${escapeMarkup(customer.id)}</td><td><strong>${escapeMarkup(customer.fullName || '—')}</strong><small class="table-subtext">${escapeMarkup(customer.company || '')}</small></td><td>${escapeMarkup(customer.phone || '—')}</td><td>${escapeMarkup(customer.email || '—')}</td><td>${escapeMarkup(customer.nationality || '—')}</td><td>${metrics.bookings}</td><td>RM ${metrics.balance.toFixed(2)}</td><td><button class="ghost-btn customer-open" data-open-customer="${encodeURIComponent(JSON.stringify(customer))}">Open</button></td></tr>`; }).join('') : '<tr><td colspan="8" class="empty-cell">Tiada customer. Tekan + New Customer untuk menambah rekod.</td></tr>'}</tbody></table></div></article>`;
 }
@@ -1560,6 +1608,7 @@ document.addEventListener('click', (event) => {
     event.stopImmediatePropagation();
     const quotation = JSON.parse(decodeURIComponent(openQuotation.dataset.openQuotation));
     document.body.insertAdjacentHTML('beforeend', quotationEditor(quotation));
+    ensureQuotationAssignment(document.querySelector('#quotationForm'));
     updateQuotationTotal(document.querySelector('#quotationForm'));
     return;
   }
@@ -1567,6 +1616,7 @@ document.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopImmediatePropagation();
     document.body.insertAdjacentHTML('beforeend', quotationEditor());
+    ensureQuotationAssignment(document.querySelector('#quotationForm'));
     updateQuotationTotal(document.querySelector('#quotationForm'));
     return;
   }
@@ -1587,6 +1637,7 @@ document.addEventListener('click', (event) => {
       const quotation = {
         id: existing?.id || nextQuotationNumber(quotations),
         leadId: lead.id,
+        assignee: lead.assignee || '',
         customer: lead.customer,
         phone: lead.phone,
         email: lead.email,
@@ -1606,6 +1657,7 @@ document.addEventListener('click', (event) => {
       render();
       document.body.insertAdjacentHTML('beforeend', quotationEditor(quotation));
       document.querySelector('#quotationForm')?.setAttribute('data-from-lead', 'true');
+      ensureQuotationAssignment(document.querySelector('#quotationForm'));
       updateQuotationTotal(document.querySelector('#quotationForm'));
     }
     return;
@@ -1629,13 +1681,16 @@ document.addEventListener('click', (event) => {
     event.stopImmediatePropagation();
     const lead = JSON.parse(decodeURIComponent(openLead.dataset.openLead));
     document.body.insertAdjacentHTML('beforeend', leadEditor(lead));
-    document.querySelector('#leadForm').dataset.originalLeadId = lead.id;
+    const leadForm = document.querySelector('#leadForm');
+    leadForm.dataset.originalLeadId = lead.id;
+    ensureLeadAssignment(leadForm);
     return;
   }
   if (newLead && state.active === 'leads') {
     event.preventDefault();
     event.stopImmediatePropagation();
     document.body.insertAdjacentHTML('beforeend', leadEditor());
+    ensureLeadAssignment(document.querySelector('#leadForm'));
   }
 }, true);
 
@@ -1671,7 +1726,7 @@ document.addEventListener('change', (event) => {
     updateInvoicePaymentSummary(form);
     return;
   }
-  if (event.target.matches('#invoicePaymentForm [name="paymentType"]')) { updateInvoicePaymentSummary(event.target.form); return; }
+  if (event.target.matches('#invoicePaymentForm [name="paymentType"], #invoicePaymentForm [name="paymentAmount"]')) { updateInvoicePaymentSummary(event.target.form); return; }
   if (event.target.matches('[data-lead-filter]')) {
     state.leadFilter = event.target.value;
     if (state.active === 'leads') render();
@@ -1955,6 +2010,26 @@ document.addEventListener('click', (event) => {
 });
 
 document.addEventListener('submit', (event) => {
+  if (event.target.id !== 'invoiceForm') return;
+  event.preventDefault();
+  const form = event.target;
+  if (!form.reportValidity()) return;
+  const invoiceId = form.dataset.invoiceId;
+  const assignee = form.elements.assignee?.value || '';
+  const invoices = storedInvoices();
+  const invoice = invoices.find(item => item.id === invoiceId);
+  if (!invoice) return;
+  invoice.assignee = assignee;
+  invoice.quotationSnapshot = {...(invoice.quotationSnapshot || {}), assignee};
+  localStorage.setItem('milas-invoices', JSON.stringify(invoices));
+  document.querySelector('#invoicePreviewModal')?.remove();
+  state.active = 'invoices';
+  state.toast = 'Invoice berjaya dikemas kini.';
+  render();
+  setTimeout(() => { state.toast = ''; render(); }, 2200);
+});
+
+document.addEventListener('submit', (event) => {
   if (event.target.id !== 'bookingForm') return;
   event.preventDefault();
   const form = event.target;
@@ -1967,6 +2042,7 @@ document.addEventListener('submit', (event) => {
   const index = records.findIndex(item => item.orderId === original);
   if (index >= 0) records[index] = record; else records.push(record);
   persistSharedCollection('bookings', records);
+  syncBookingToCustomer(record);
   document.querySelector('#bookingModal')?.remove();
   state.toast = 'Booking berjaya disimpan.';
   render();
@@ -2199,11 +2275,16 @@ function enhanceFormFields(form) {
   // Payment records use a fixed finance form; field customization is only for
   // editable CRM forms and should not appear in the payment workflow.
   const formId = formElementId(form);
-  if (!formId || formId === 'fieldManager' || formId === 'formFieldManager' || formId === 'invoicePaymentForm') return;
+  if (!formId || formId === 'fieldManager' || formId === 'formFieldManager' || formId === 'invoicePaymentForm' || formId === 'invoiceForm') return;
   const config = formFieldConfig(formId);
   const grid = form.querySelector('.editor-grid');
   if (!grid) return;
   const record = formFieldRecord(form);
+  if (form.id === 'quotationForm' && !form.querySelector('[name="assignee"]')) {
+    grid.insertAdjacentHTML('afterbegin', assignFieldMarkup(record.assignee || '', true));
+  }
+  if (form.id === 'quotationForm') ensureQuotationAssignment(form);
+  if (form.id === 'leadForm') ensureLeadAssignment(form);
   config.custom.forEach(field => {
     if (form.elements[field.key]) return;
     const value = record[field.key] ?? '';
@@ -2213,10 +2294,10 @@ function enhanceFormFields(form) {
       : `<input name="${escapeMarkup(field.key)}" type="${escapeMarkup(field.type || 'text')}" value="${escapedValue}" />`;
     grid.insertAdjacentHTML('beforeend', `<label data-custom-field="${escapeMarkup(field.key)}">${escapeMarkup(field.label)}${control}</label>`);
   });
-  applyFormFieldOrder(form, config.order);
+  applyFormFieldOrder(form, form.id === 'quotationForm' ? ['id', 'assignee', ...config.order] : config.order);
   if (form.id === 'quotationForm' && form.dataset.fromLead === 'true') {
     const currentKeys = [...grid.querySelectorAll(':scope > label')].map(label => label.querySelector('[name]')?.name).filter(Boolean);
-    applyFormFieldOrder(form, [...['id', 'customer', 'phone', 'email', 'nationality'], ...currentKeys]);
+    applyFormFieldOrder(form, [...['id', 'assignee', 'customer', 'phone', 'email', 'nationality'], ...currentKeys]);
   }
   applyFormFieldRequirements(form, config);
   form.querySelectorAll('label').forEach(label => {
