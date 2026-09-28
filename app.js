@@ -1,5 +1,32 @@
 const sharedData = { suppliers: null, bookings: null };
 
+const EMPTY_DATABASE_RESET_VERSION = '2026-09-28-empty-database-v4';
+const DATABASE_DATA_KEYS = [
+  'milas-leads', 'milas-quotations', 'milas-invoices', 'milas-customers',
+  'milas-suppliers', 'milas-bookings', 'milas-tour-products', 'milas-tour-packages',
+  'milas-sent-bookings', 'milas-unsent-bookings', 'milas-verified-sent',
+  'milas-confirmed-send-005', 'milas-supplier-drafts'
+];
+function resetDatabaseIfNeeded() {
+  try {
+    if (localStorage.getItem('milas-empty-database-reset') === EMPTY_DATABASE_RESET_VERSION) return;
+    DATABASE_DATA_KEYS.forEach(key => localStorage.removeItem(key));
+    Object.keys(localStorage).filter(key => key.startsWith('milas-supplier-draft-')).forEach(key => localStorage.removeItem(key));
+    localStorage.setItem('milas-leads', '[]');
+    localStorage.setItem('milas-quotations', '[]');
+    localStorage.setItem('milas-invoices', '[]');
+    localStorage.setItem('milas-customers', '[]');
+    localStorage.setItem('milas-suppliers', '[]');
+    localStorage.setItem('milas-bookings', '[]');
+    localStorage.setItem('milas-tour-products', '[]');
+    sharedData.suppliers = [];
+    sharedData.bookings = [];
+    localStorage.setItem('milas-empty-database-reset', EMPTY_DATABASE_RESET_VERSION);
+    fetch('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ suppliers: [], bookings: [] }) }).catch(() => {});
+  } catch {}
+}
+resetDatabaseIfNeeded();
+
 window.addEventListener('storage', event => {
   if (event.key !== 'milas-bookings' || !event.newValue) return;
   try {
@@ -98,18 +125,18 @@ function dashboard() {
 }
 
 const moduleData = {
-  leads: { heads:['Lead ID','Customer','Source','Interested package','Est. value','Status'], rows:[['LD-000124','Tan Jia Wei','WhatsApp','Kinabatangan 3D2N','RM 3,640','Qualified'],['LD-000123','Amanda Lee','Website','Semporna Island','RM 2,240','Contacted'],['LD-000122','Mohd Firdaus','Referral','Kundasang Nature','RM 3,850','New Lead']] },
-  customers: { heads:['Customer ID','Customer','Contact','Nationality','Bookings','Balance'], rows:[['CUS-00124','Sarah Lim','sarah@example.com','Malaysia','4','RM 1,200'],['CUS-00123','Daniel Wong','+60 12-345 6789','Singapore','2','RM 0'],['CUS-00122','Nur Aina','nur.aina@example.com','Malaysia','1','RM 3,850']] },
-  quotations: { heads:['Quotation','Customer','Package','Travel date','Total','Status'], rows:[['QT-260916-014','Tan Jia Wei','3D2N Kinabatangan','22 Sep 2026','RM 3,640','Sent'],['QT-260915-013','Amanda Lee','Island Hopping Semporna','24 Sep 2026','RM 2,240','Accepted'],['QT-260915-012','Mohd Firdaus','Kundasang Nature','30 Sep 2026','RM 3,850','Draft']] },
-  bookings: { heads:['Booking','Customer','Package','Travel date','Value','Status'], rows:[['MIL-260916-001','Sarah Lim','3D2N Kinabatangan','22 Sep 2026','RM 4,680','Confirmed'],['MIL-260915-008','Daniel Wong','Island Hopping Semporna','24 Sep 2026','RM 2,240','Deposit paid'],['MIL-260915-007','Nur Aina','Kundasang Nature Escape','30 Sep 2026','RM 3,850','Pending payment']] },
-  products: { heads:['Package ID','Package','Destination','Duration','Adult price','Status'], rows:[['MTT-D1012','3D2N Kinabatangan River','Kinabatangan','3D2N','RM 1,820','Published'],['MTT-S0703','Semporna Island Hopping','Semporna','1 Day','RM 280','Published'],['MTT-K0402','Kundasang Nature Escape','Kundasang','2D1N','RM 980','Draft']] },
+  leads: { heads:['Lead ID','Customer','Source','Interested package','Est. value','Status'], rows:[] },
+  customers: { heads:['Customer ID','Customer','Contact','Nationality','Bookings','Balance'], rows:[] },
+  quotations: { heads:['Quotation','Customer','Package','Travel date','Total','Status'], rows:[] },
+  bookings: { heads:['Booking','Customer','Package','Travel date','Value','Status'], rows:[] },
+  products: { heads:['Package ID','Package','Destination','Duration','Adult price','Status'], rows:[] },
   categories: { heads:['Category','Packages','Featured','Last updated','Status'], rows:[['Wildlife','8','Yes','16 Sep 2026','Active'],['Island','12','Yes','14 Sep 2026','Active'],['Honeymoon','3','No','02 Sep 2026','Active']] },
   addons: { heads:['Add-on','Applies to','Price','Bookings this month','Status'], rows:[['Airport Transfer','All packages','RM 120','14','Active'],['Private Transport','Kundasang, Wildlife','RM 450','6','Active'],['Additional Night','Selected packages','RM 280','3','Active']] },
   pricing: { heads:['Rule','Package','Adult','Child','Valid from','Status'], rows:[['PR-2026-09','Kinabatangan 3D2N','RM 1,820','RM 1,365','01 Sep 2026','Active'],['PR-2026-08','Semporna Island','RM 280','RM 210','01 Aug 2026','Active'],['PR-2026-07','Kundasang Escape','RM 980','RM 735','01 Jul 2026','Active']] },
-  payments: { heads:['Payment ID','Booking','Customer','Date','Amount','Type'], rows:[['PAY-00188','MIL-260916-001','Sarah Lim','16 Sep 2026','RM 2,000','Deposit'],['PAY-00187','MIL-260915-008','Daniel Wong','15 Sep 2026','RM 1,120','Full payment'],['PAY-00186','MIL-260915-007','Nur Aina','15 Sep 2026','RM 1,000','Partial payment']] },
-  outstanding: { heads:['Booking','Customer','Due date','Booking value','Outstanding','Age'], rows:[['MIL-260915-007','Nur Aina','16 Sep 2026','RM 3,850','RM 2,850','Due today'],['MIL-260914-004','Jason Tan','12 Sep 2026','RM 5,200','RM 1,800','4 days overdue'],['MIL-260910-002','Lee Mei','08 Sep 2026','RM 2,900','RM 900','8 days overdue']] },
-  suppliers: { heads:['Supplier','Type','Contact','Coverage','Bookings','Status'], rows:[['Greenview Travel & Tours','Tour','Mr. Rahman','Kinabatangan','8','Active'],['Sabah Transfer Co.','Transport','+60 13-555 0192','Sabah','12','Active'],['Borneo Guide Network','Tour Guide','hello@bguides.my','East Sabah','5','Active']] },
-  operations: { heads:['Task','Booking','Travel date','Assigned to','Due','Status'], rows:[['Confirm tour','MIL-260916-001','22 Sep 2026','Rizal Karim','18 Sep','Ready'],['Confirm transport','MIL-260915-008','24 Sep 2026','Rizal Karim','19 Sep','Pending'],['Prepare traveller info','MIL-260915-007','30 Sep 2026','Sarah Ahmad','25 Sep','Pending']] },
+  payments: { heads:['Payment ID','Booking','Customer','Date','Amount','Type'], rows:[] },
+  outstanding: { heads:['Booking','Customer','Due date','Booking value','Outstanding','Age'], rows:[] },
+  suppliers: { heads:['Supplier','Type','Contact','Coverage','Bookings','Status'], rows:[] },
+  operations: { heads:['Task','Booking','Travel date','Assigned to','Due','Status'], rows:[] },
 };
 
 function dashboardMoney(value) {
@@ -289,7 +316,7 @@ function leadEditor(record = {}) {
   const requiredContact = 'required';
   const requiredMark = '<span class="required-mark" aria-hidden="true">*</span>';
   const quotationAction = record.id && lead.status === 'Contacted' ? `<button type="button" class="proceed-quotation" data-proceed-quotation="${lead.id}">Proceed to quotation</button>` : '';
-  const editorActions = quotationAction || '<button type="button" class="ghost-btn" data-close-lead>Cancel</button><button type="submit" class="primary-btn">Save lead</button>';
+  const editorActions = quotationAction ? `${quotationAction}<button type="submit" class="primary-btn">Save lead</button>` : '<button type="button" class="ghost-btn" data-close-lead>Cancel</button><button type="submit" class="primary-btn">Save lead</button>';
   return `<div class="modal-backdrop" id="leadModal"><form class="booking-modal lead-modal" id="leadForm" onsubmit="return handleLeadSubmit(event)"><div class="modal-head"><div><span class="eyebrow">CRM / Leads</span><h2>${record.id ? 'Edit lead' : 'New lead'}</h2><p>Simpan dan urus lead baharu Milas Travel.</p></div><button type="button" class="modal-close" data-close-lead>×</button></div><div class="editor-grid">${input('id','Lead ID')}${input('customer',`Customer name ${requiredMark}`,'text',requiredContact)}${phoneFieldMarkup('phone',`Phone number ${requiredMark}`,lead.phone,Boolean(requiredContact))}${input('email',`Email ${requiredMark}`,'email',requiredContact)}${nationalityFieldMarkup(lead.nationality, true, `Nationality ${requiredMark}`)}<label>Source<select name="source">${leadSources.map(source => `<option ${lead.source === source ? 'selected' : ''}>${source}</option>`).join('')}</select></label>${input('packageName','Interested package')}${input('value','Estimated value')}${input('receivedDate','Lead received date','date','data-lead-received-date')}${input('followUpDate','Follow-up date','date','readonly data-lead-follow-up')}<label>Status<select name="status">${leadStatuses.map(status => `<option ${lead.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></label><label>Follow-up status<select name="followUpStatus"><option ${lead.followUpStatus !== 'Done' ? 'selected' : ''}>Pending</option><option ${lead.followUpStatus === 'Done' ? 'selected' : ''}>Done</option></select></label><label class="full-width">Notes<textarea name="notes" rows="4">${lead.notes || ''}</textarea></label></div><div class="modal-actions">${editorActions}</div></form></div>`;
 }
 function persistLeadForm(form) {
@@ -888,13 +915,7 @@ function allBookingsViewV2() {
   return `<section class="all-bookings"><div class="booking-toolbar"><div class="search-field">⌕ <input placeholder="Search bookings..." /></div><button class="view-control">▤ View: List</button><button class="view-control">▦ Group by: Status</button><button class="view-control">Filter</button><span class="toolbar-spacer"></span></div>${groups.map(([name,count,tone,rows],index)=>`<article class="booking-status-group ${index===2?'expanded':''}"><button class="status-group-heading"><span class="status-caret">${index===2?'⌄':'›'}</span><span class="booking-status ${tone}"><b>●</b>${name}</span><span class="booking-count">${count}</span><span class="status-actions">••• &nbsp;＋</span></button>${rows.length?bookingTable(rows):`<div class="empty-bookings">No bookings in this status</div>`}</article>`).join('')}</section>`;
 }
 
-const bookingSeed = [
-  { status:'ON GOING', name:'Sepilok Orangutan, Sun Bear & City Tour [Share Tour]', bookingDate:'12/11/25', startDate:'2 days ago', assignee:'Farzana Milas Travel', channel:'GYG', supplier:'Pending', type:'Day Tour', customer:'', package:'Sepilok', adult:'', children:'', sales:'', payment:'Paid', email:'', orderId:'GYG83XRZAA7N', proof:'Attached', invoice:'Attached', commission:'7.32' },
-  { status:'CONFIRMED', name:'2D1N Turtle Island (Fullboard)', bookingDate:'1/29/26', startDate:'Tomorrow', assignee:'Azra', channel:'Viator', supplier:'Confirm', type:'Multi Day', customer:'', package:'Turtle Island', adult:'2', children:'0', sales:'RM 2,900', payment:'Deposit paid', email:'', orderId:'MIL-260929-001', proof:'Attached', invoice:'Attached', commission:'5%' },
-  { status:'CONFIRMED', name:'Semporna Island Hopping [Package A]', bookingDate:'12/19/25', startDate:'9/23/26', assignee:'Farzana Milas Travel', channel:'GYG', supplier:'Pending', type:'Day Tour', customer:'', package:'Semporna', adult:'2', children:'0', sales:'RM 2,240', payment:'Deposit paid', email:'', orderId:'MIL-260923-002', proof:'Attached', invoice:'Attached', commission:'5%' },
-  { status:'COMPLETE', name:'Completed Kinabatangan River Tour', bookingDate:'08/09/26', startDate:'Completed', assignee:'Sarah Ahmad', channel:'Website', supplier:'Confirm', type:'Multi Day', customer:'Sarah Lim', package:'Kinabatangan', adult:'2', children:'0', sales:'RM 3,640', payment:'Paid', email:'sarah@example.com', orderId:'MIL-260908-002', proof:'Attached', invoice:'Attached', commission:'5%' },
-  { status:'CANCEL', name:'Cancelled Mabul Island Booking', bookingDate:'02/09/26', startDate:'Cancelled', assignee:'Afiq Milas', channel:'OTA', supplier:'Pending', type:'Day Tour', customer:'Daniel Wong', package:'Mabul Island', adult:'2', children:'0', sales:'RM 2,240', payment:'Refunded', email:'daniel@example.com', orderId:'MIL-260902-004', proof:'Attached', invoice:'Attached', commission:'—' },
-];
+const bookingSeed = [];
 function parseBookingDate(value) {
   const normalized = String(value || '').trim().toLowerCase();
   const now = new Date();
@@ -1105,6 +1126,9 @@ function markBookingSent(bookingId, channel) {
     const verified = JSON.parse(localStorage.getItem('milas-verified-sent') || '{}');
     verified[bookingId] = { sentAt: new Date().toISOString(), channel };
     localStorage.setItem('milas-verified-sent', JSON.stringify(verified));
+    const bookings = storedBookings();
+    const booking = bookings.find(item => item.orderId === bookingId);
+    if (booking) { booking.supplier = 'Already sent'; persistSharedCollection('bookings', bookings); }
     if (bookingId === 'MIL-260916-005') localStorage.setItem('milas-confirmed-send-005', 'true');
   } catch {}
 }
@@ -1221,6 +1245,35 @@ function bookingSalesDisplay(record) {
   const value = bookingSalesValue(record);
   return value > 0 ? dashboardMoney(value) : (record?.sales || record?.total || '—');
 }
+function selectedBookingAddons(value) {
+  if (Array.isArray(value)) return value.map(item => typeof item === 'string' ? {name: item} : item).filter(item => item?.name);
+  try {
+    const parsed = JSON.parse(value || '[]');
+    if (Array.isArray(parsed)) return selectedBookingAddons(parsed);
+  } catch {}
+  return String(value || '').split(',').map(name => name.trim()).filter(Boolean).map(name => ({name}));
+}
+function bookingOptionalPackageFieldMarkup(packageId, selected = '') {
+  const options = quotationOptionalPackages(packageId);
+  const existing = selected && !options.some(item => item.option === selected) ? `<option selected value="${escapeMarkup(selected)}">Existing — ${escapeMarkup(selected)}</option>` : '';
+  return `<label data-booking-optional-package>Optional package<select name="optionalPackage"><option value="">Base package</option>${options.map(item => `<option value="${escapeMarkup(item.option)}" ${item.option === selected ? 'selected' : ''}>${escapeMarkup(item.option)}</option>`).join('')}${existing}</select></label>`;
+}
+function bookingAddonsFieldMarkup(packageId, selected = []) {
+  const addons = quotationAddons(packageId);
+  const selectedNames = selectedBookingAddons(selected).map(item => item.name);
+  const label = selectedNames.length ? selectedNames.join(', ') : 'Pilih add-on';
+  return `<label data-booking-addons>Add-ons<details class="multi-select booking-addon-multi"><summary>${escapeMarkup(label)}</summary><div class="multi-select-options">${addons.length ? addons.map(addon => `<label><input type="checkbox" name="addOns" value="${escapeMarkup(JSON.stringify({name: addon.name, basePrice: addon.basePrice}))}" ${selectedNames.includes(addon.name) ? 'checked' : ''} />${escapeMarkup(addon.name)} <span>RM ${addon.basePrice.toFixed(2)}</span></label>`).join('') : '<span class="empty-bookings">Tiada add-on untuk package ini.</span>'}</div></details></label>`;
+}
+function bookingNationalityFieldMarkup(value = '') {
+  const options = countryOptions('').replaceAll(' selected', '');
+  return `<label>Nationality<input name="nationality" value="${escapeMarkup(value)}" list="bookingNationalityOptions" placeholder="Search country..." autocomplete="off" data-booking-nationality /><datalist id="bookingNationalityOptions">${options}</datalist></label>`;
+}
+function countryDialCodeForNationality(value = '') {
+  const selected = String(value || '').trim().toLowerCase();
+  if (!selected) return '';
+  const countryCode = Object.keys(countryDialCodes).find(code => String(countryNames.of(code) || '').trim().toLowerCase() === selected);
+  return countryCode ? countryDialCodes[countryCode] : '';
+}
 function normaliseBookingSales(records) {
   let changed = false;
   const normalised = records.map(record => {
@@ -1238,18 +1291,26 @@ function bookingEditor(record = {}) {
   record.payment = bookingPaymentStatus(record);
   const fields = getBookingFields(), fieldConfig = formFieldConfig('bookingForm'), packages = storedTourPackages();
   const packageOptions = `<option value="">Pilih tour package...</option>${packages.map(item => `<option value="${item.id}" ${record.package===item.id||record.package===item.name?'selected':''}>${item.id} — ${item.name}</option>`).join('')}${record.package && !packages.some(item => item.id===record.package || item.name===record.package) ? `<option selected value="${record.package}">Existing — ${record.package}</option>` : ''}`;
-  const fieldMarkup = fields.filter(([key, , visible]) => key !== 'payment' && visible !== false && !fieldConfig.hidden.includes(key)).map(([key,label]) => key === 'payment'
-    ? '<label>Payment<select name="payment"><option value="">Pilih status payment...</option>' + paymentStatuses().map(status => '<option value="' + status + '" ' + (record.payment===status ? 'selected' : '') + '>' + status + '</option>').join('') + (record.payment && !paymentStatuses().includes(record.payment) ? '<option selected value="' + record.payment + '">Existing — ' + record.payment + '</option>' : '') + '</select></label>'
+  const fieldMarkup = fields.filter(([key, , visible]) => !['name', 'paymentAmount', 'amountOutstanding'].includes(key) && visible !== false && (key === 'payment' || !fieldConfig.hidden.includes(key))).map(([key,label]) => key === 'payment'
+    ? '<label>' + label + '<select name="payment"><option value="">Pilih status payment...</option>' + paymentStatuses().map(status => '<option value="' + status + '" ' + (record.payment===status ? 'selected' : '') + '>' + status + '</option>').join('') + (record.payment && !paymentStatuses().includes(record.payment) ? '<option selected value="' + record.payment + '">Existing — ' + record.payment + '</option>' : '') + '</select></label>'
     : key === 'channel'
     ? '<label>Source<select name="channel"><option value="">Pilih source...</option>' + bookingSources().map(source => '<option value="' + source + '" ' + (record.channel===source ? 'selected' : '') + '>' + source + '</option>').join('') + (record.channel && !bookingSources().includes(record.channel) ? '<option selected value="' + record.channel + '">Existing — ' + record.channel + '</option>' : '') + '</select></label>'
     : key === 'assignee'
     ? assignFieldMarkup(record.assignee, true)
+    : key === 'supplier'
+    ? '<label>' + label + '<select name="supplier"><option value="Send" ' + (record.supplier === 'Send' || !record.supplier ? 'selected' : '') + '>Send</option><option value="Already sent" ' + (record.supplier === 'Already sent' ? 'selected' : '') + '>Already sent</option>' + (record.supplier && !['Send', 'Already sent'].includes(record.supplier) ? '<option value="' + escapeMarkup(record.supplier) + '" selected>Existing — ' + escapeMarkup(record.supplier) + '</option>' : '') + '</select></label>'
     : key === 'startDate'
     ? '<label>Start date<input type="date" name="startDate" value="' + dateInputValue(record.startDate || record.travelDate) + '" min="' + (isNew ? todayIso() : '') + '" required /></label>'
     : key === 'phone'
-    ? phoneFieldMarkup('phone', label, record.phone)
+    ? phoneFieldMarkup('phone', label, record.phone || (record.nationality ? countryDialCodeForNationality(record.nationality) : ''))
     : key === 'package'
     ? `<label>${label}<select name="package">${packageOptions}</select></label>`
+    : key === 'optionalPackage'
+    ? bookingOptionalPackageFieldMarkup(record.package, record.optionalPackage)
+    : key === 'addOns'
+    ? bookingAddonsFieldMarkup(record.package, record.addOns || record.selectedAddons)
+    : key === 'nationality'
+    ? bookingNationalityFieldMarkup(record.nationality)
     : key === 'sales'
     ? `<label>${label}<input name="sales" value="${record.sales||''}" data-auto-sales readonly placeholder="Auto kira dari harga package" /></label>`
     : `<label>${label}<input name="${key}" value="${record[key]||''}" ${key==='orderId'?'readonly':''} ${key==='adult'||key==='children'||key==='infant'?'type="number" min="0"':''} ${key==='discount'?'type="number" min="0" max="100" step="0.01" placeholder="0"':''} /></label>`).join('');
@@ -1266,16 +1327,20 @@ function allBookingsViewV3() {
   return `<section class="all-bookings"><div class="booking-toolbar"><div class="search-field">⌕ <input placeholder="Search bookings..." /></div><button class="view-control">▤ View: List</button><button class="view-control">▦ Group by: Status</button><button class="view-control">Filter</button><span class="toolbar-spacer"></span></div>${groups.map(status=>{const rows=records.filter(r=>r.status===status);return `<article class="booking-status-group ${status==='ON GOING'?'expanded':''}"><button class="status-group-heading"><span class="status-caret">${status==='ON GOING'?'⌄':'›'}</span><span class="booking-status ${status==='COMPLETE'?'complete':status==='CANCEL'?'cancel':status==='ON GOING'?'ongoing':status==='CONFIRMED'?'confirmed':'new-order'}"><b>●</b>${status}</span><span class="booking-count">${bookingCount(records, status)}</span><span class="status-actions">••• &nbsp;＋</span></button><div class="booking-grid-wrap"><table class="clickup-booking-table"><thead><tr>${['Name','Booking Date','Start date','Assignee','Channel Platform','Supplier Confirmation','Type','Customer','Package','Adult','Children','Sales Amount','Payment','Email','OrderID','Order Proof/Payment','Invoice','Comm 5%'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr data-edit-booking="${encodeURIComponent(JSON.stringify(r))}"><td><span class="booking-check">✓</span><strong>${r.name}</strong></td><td>${r.bookingDate}</td><td>${r.startDate}</td><td>${r.assignee}</td><td><span class="field-chip pink">${r.channel}</span></td><td><span class="field-chip ${r.supplier==='Confirm'?'green':'yellow'}">${r.supplier}</span></td><td><span class="field-chip blue">${r.type}</span></td><td>${r.customer||'—'}</td><td>${r.package||'—'}</td><td>${r.adult||'—'}</td><td>${r.children||'—'}</td><td>${bookingSalesDisplay(r)}</td><td>${r.payment||'—'}</td><td>${r.email||'—'}</td><td>${r.orderId||'—'}</td><td class="clip">${r.proof||'⌕'}</td><td class="clip">${r.invoice||'⌕'}</td><td>${r.commission||'—'}</td></tr>`).join(''):`<tr><td colspan="18" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task" data-new-booking>＋ Add Task</button></div></article>`;}).join('')}</section>`;
 }
 
-const defaultBookingFields = [['orderId','Booking ID'],['assignee','Assign'],['name','Booking name'],['bookingDate','Booking date'],['startDate','Start date'],['channel','Channel platform'],['supplier','Supplier confirmation'],['type','Type'],['customer','Customer'],['phone','Phone number'],['email','Email'],['nationality','Nationality'],['package','Package'],['optionalPackage','Optional package'],['addOns','Add-ons'],['adult','Adults'],['children','Children'],['infant','Infants'],['singleSupplement','Single supplement'],['discount','Discount'],['sales','Sales amount'],['payment','Status payment'],['paymentAmount','Amount payment'],['amountOutstanding','Amount outstanding'],['total','Total'],['proof','Order proof / payment'],['invoice','Invoice'],['commission','Commission 5%']];
-function getStoredBookingFields() { try { const fields = JSON.parse(localStorage.getItem('milas-booking-fields') || 'null') || defaultBookingFields.map(field => [...field]); const salesIndex = fields.findIndex(([key]) => key === 'sales'); const customerIndex = fields.findIndex(([key]) => key === 'customer'); if (!fields.some(([key]) => key === 'phone')) fields.splice(customerIndex >= 0 ? customerIndex + 1 : fields.length, 0, ['phone', 'Phone number', true]); if (!fields.some(([key]) => key === 'infant')) fields.splice(salesIndex >= 0 ? salesIndex : fields.length, 0, ['infant', 'Infants', true]); if (!fields.some(([key]) => key === 'discount') && !fields.some(([, label]) => /discount/i.test(label))) fields.splice(salesIndex >= 0 ? salesIndex : fields.length, 0, ['discount', 'Discount', true]); return fields; } catch { return defaultBookingFields.map(field => [...field]); } }
+const defaultBookingFields = [['orderId','Booking ID'],['assignee','Assign'],['name','Booking name'],['bookingDate','Booking date'],['startDate','Start date'],['channel','Channel platform'],['supplier','Supplier confirmation'],['type','Type'],['customer','Customer'],['nationality','Nationality'],['phone','Phone number'],['email','Email'],['package','Package'],['optionalPackage','Optional package'],['addOns','Add-ons'],['adult','Adults'],['children','Children'],['infant','Infants'],['singleSupplement','Single supplement'],['discount','Discount'],['sales','Sales amount'],['payment','Status payment'],['total','Total'],['proof','Order proof / payment'],['invoice','Invoice'],['commission','Commission 5%']];
+function getStoredBookingFields() { try { const stored = JSON.parse(localStorage.getItem('milas-booking-fields') || 'null'); const fields = stored || defaultBookingFields.map(field => [...field]); const salesIndex = fields.findIndex(([key]) => key === 'sales'); let customerIndex = fields.findIndex(([key]) => key === 'customer'); if (!fields.some(([key]) => key === 'phone')) fields.splice(customerIndex >= 0 ? customerIndex + 1 : fields.length, 0, ['phone', 'Phone number', true]); if (!fields.some(([key]) => key === 'infant')) fields.splice(salesIndex >= 0 ? salesIndex : fields.length, 0, ['infant', 'Infants', true]); if (!fields.some(([key]) => key === 'discount') && !fields.some(([, label]) => /discount/i.test(label))) fields.splice(salesIndex >= 0 ? salesIndex : fields.length, 0, ['discount', 'Discount', true]); customerIndex = fields.findIndex(([key]) => key === 'customer'); const nationalityIndex = fields.findIndex(([key]) => key === 'nationality'); if (customerIndex >= 0 && nationalityIndex >= 0 && nationalityIndex !== customerIndex + 1) { const [nationalityField] = fields.splice(nationalityIndex, 1); fields.splice(fields.findIndex(([key]) => key === 'customer') + 1, 0, nationalityField); if (stored) localStorage.setItem('milas-booking-fields', JSON.stringify(fields)); } return fields; } catch { return defaultBookingFields.map(field => [...field]); } }
 function getBookingFields() {
   const fields = getStoredBookingFields();
   const assignIndex = fields.findIndex(([key]) => key === 'assignee');
   if (assignIndex >= 0) fields.splice(assignIndex, 1);
   const orderIndex = fields.findIndex(([key]) => key === 'orderId');
   fields.splice(orderIndex >= 0 ? orderIndex + 1 : 0, 0, ['assignee', 'Assign', true]);
-  const requiredFields = [['nationality', 'Nationality'], ['optionalPackage', 'Optional package'], ['addOns', 'Add-ons'], ['singleSupplement', 'Single supplement'], ['paymentAmount', 'Amount payment'], ['amountOutstanding', 'Amount outstanding'], ['total', 'Total']];
+  const requiredFields = [['nationality', 'Nationality'], ['optionalPackage', 'Optional package'], ['addOns', 'Add-ons'], ['singleSupplement', 'Single supplement'], ['total', 'Total']];
   requiredFields.forEach(([key, label]) => { if (!fields.some(([fieldKey]) => fieldKey === key)) fields.push([key, label, true]); });
+  for (const key of ['paymentAmount', 'amountOutstanding']) { const index = fields.findIndex(([fieldKey]) => fieldKey === key); if (index >= 0) fields.splice(index, 1); }
+  const paymentIndex = fields.findIndex(([key]) => key === 'payment');
+  const totalIndex = fields.findIndex(([key]) => key === 'total');
+  if (paymentIndex >= 0 && totalIndex >= 0 && totalIndex !== paymentIndex + 1) { const [totalField] = fields.splice(totalIndex, 1); fields.splice(fields.findIndex(([key]) => key === 'payment') + 1, 0, totalField); }
   return fields;
 }
 function saveBookingFields(fields) { localStorage.setItem('milas-booking-fields', JSON.stringify(fields)); }
@@ -1303,7 +1368,7 @@ function bookingSummaryTable(rows) {
   return bookingSummaryTableBase(rows).replace(/(<button class="open-booking" data-open-booking="([^"]+)">Open <span>→<\/span><\/button>)/g, (match, openButton, encoded) => {
     const record = JSON.parse(decodeURIComponent(encoded));
     if (record.status !== 'NEW ORDER') return openButton;
-    const alreadySent = isBookingSent(record.orderId);
+    const alreadySent = isBookingSent(record.orderId) || /^already sent$/i.test(String(record.supplier || ''));
     return openButton + ' <button class="send-booking' + (alreadySent ? ' already-sent' : '') + '" data-send-booking>' + (alreadySent ? 'Already sent' : 'Send') + '</button>';
   });
 }
@@ -1930,7 +1995,24 @@ document.addEventListener('input', (event) => {
 });
 
 document.addEventListener('change', (event) => {
-  if (event.target.matches('#bookingForm select[name="package"]')) updateBookingSales(event.target.form);
+  if (event.target.matches('#bookingForm [data-booking-nationality]')) {
+    const dialCode = countryDialCodeForNationality(event.target.value);
+    const phoneCode = event.target.form?.elements?.phoneCountryCode;
+    if (dialCode && phoneCode) phoneCode.value = dialCode;
+  }
+  if (event.target.matches('#bookingForm select[name="package"]')) {
+    const form = event.target.form;
+    const optional = form.querySelector('[data-booking-optional-package]');
+    const addons = form.querySelector('[data-booking-addons]');
+    if (optional) optional.outerHTML = bookingOptionalPackageFieldMarkup(event.target.value);
+    if (addons) addons.outerHTML = bookingAddonsFieldMarkup(event.target.value);
+    updateBookingSales(form);
+  }
+  if (event.target.matches('#bookingForm .booking-addon-multi input[name="addOns"]')) {
+    const picker = event.target.closest('.booking-addon-multi');
+    const selected = [...picker.querySelectorAll('input[name="addOns"]:checked')].map(input => input.parentElement.textContent.trim().replace(/\s+RM\s+[\d,.]+$/, ''));
+    picker.querySelector('summary').textContent = selected.length ? selected.join(', ') : 'Pilih add-on';
+  }
   if (event.target.matches('#quotationForm .quotation-addon-multi input[name="selectedAddons"]')) {
     const picker = event.target.closest('.quotation-addon-multi');
     const selected = [...picker.querySelectorAll('input[name="selectedAddons"]:checked')].map(input => input.parentElement.textContent.trim().replace(/\s+RM\s+[\d,.]+$/, ''));
@@ -2137,8 +2219,12 @@ document.addEventListener('submit', (event) => {
   if (event.target.id !== 'bookingForm') return;
   event.preventDefault();
   const form = event.target;
-  const record = combinePhoneField(Object.fromEntries(new FormData(form).entries()));
+  const formData = new FormData(form);
+  const record = combinePhoneField(Object.fromEntries(formData.entries()));
+  record.addOns = formData.getAll('addOns').map(value => { try { return JSON.parse(value); } catch { return {name: value}; } }).filter(item => item?.name);
+  record.selectedAddons = record.addOns;
   record.status = String(record.status || '').trim().toUpperCase();
+  if (!record.supplier) record.supplier = 'Send';
   const phoneField = getBookingFields().find(([key, label]) => /hp|phone|telefon/i.test(key + ' ' + label));
   if (phoneField && record[phoneField[0]]) record.noHp = record[phoneField[0]];
   const records = storedBookings();
@@ -2404,6 +2490,11 @@ function enhanceFormFields(form) {
     grid.insertAdjacentHTML('beforeend', `<label data-custom-field="${escapeMarkup(field.key)}">${escapeMarkup(field.label)}${control}</label>`);
   });
   applyFormFieldOrder(form, form.id === 'quotationForm' ? ['id', 'assignee', ...config.order] : config.order);
+  if (form.id === 'bookingForm') {
+    const paymentLabel = grid.querySelector('select[name="payment"]')?.closest('label');
+    const totalLabel = grid.querySelector('input[name="total"]')?.closest('label');
+    if (paymentLabel && totalLabel && paymentLabel.nextElementSibling !== totalLabel) grid.insertBefore(totalLabel, paymentLabel.nextElementSibling);
+  }
   if (form.id === 'quotationForm' && form.dataset.fromLead === 'true') {
     const currentKeys = [...grid.querySelectorAll(':scope > label')].map(label => label.querySelector('[name]')?.name).filter(Boolean);
     applyFormFieldOrder(form, [...['id', 'assignee', 'customer', 'phone', 'email', 'nationality'], ...currentKeys]);
@@ -2629,3 +2720,16 @@ const formFieldObserver = new MutationObserver(records => {
 });
 formFieldObserver.observe(document.body, {childList: true, subtree: true});
 document.querySelectorAll('form.booking-modal').forEach(enhanceFormFields);
+
+function syncOutstandingNavCount() {
+  const button = document.querySelector('.nav-item[data-nav="outstanding"]');
+  if (!button) return;
+  const count = storedInvoices().filter(invoice => invoicePaymentState(invoice).balance > 0).length;
+  const badge = button.querySelector('em');
+  if (!count) { badge?.remove(); return; }
+  if (badge) badge.textContent = String(count);
+  else button.insertAdjacentHTML('beforeend', `<em>${count}</em>`);
+}
+const outstandingNavObserver = new MutationObserver(() => syncOutstandingNavCount());
+outstandingNavObserver.observe(document.body, {childList: true, subtree: true});
+syncOutstandingNavCount();
