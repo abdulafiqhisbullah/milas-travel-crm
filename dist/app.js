@@ -40,8 +40,8 @@ async function loadSharedData() {
 }
 
 const navGroups = [
-  { label: 'Workspace', items: [['dashboard','Dashboard','▦']] },
-  { label: 'CRM', items: [['leads','Leads','◌'],['pipeline','Sales Pipeline','⌁'],['followups','Follow-ups','◷']] },
+  { label: 'Workspace', items: [['dashboard','Dashboard','▦'],['salesTeam','Sales Team','◎']] },
+  { label: 'CRM', items: [['leads','New Leads','◌'],['pipeline','Sales Pipeline','⌁'],['followups','Follow-ups','◷']] },
   { label: 'Sales', items: [['quotations','Quotations','▤'],['invoices','Invoices','▧']] },
   { label: 'Bookings', items: [['bookings','All Bookings','▣'],['upcoming','Upcoming Travel','◫']] },
   { label: 'Finance & Ops', items: [['payments','Payment Records','₿'],['outstanding','Outstanding Payments','!'],['reports','Reports','⌘']] },
@@ -50,7 +50,8 @@ const navGroups = [
 ];
 
 const views = {
-  dashboard: { eyebrow: 'Overview', title: 'Selamat datang, Afiq', subtitle: 'Pantau prestasi jualan dan perjalanan yang memerlukan tindakan.', action: '+ New Lead' },
+  dashboard: { eyebrow: 'Overview', title: 'Selamat datang, Afiq', subtitle: 'Pantau prestasi jualan dan perjalanan yang memerlukan tindakan.', action: '' },
+  salesTeam: { eyebrow: 'Workspace', title: 'Sales Team', subtitle: 'Pantau prestasi staff berdasarkan lead, quotation dan booking bulan ini.', action: '' },
   leads: { eyebrow: 'CRM / Leads', title: 'Leads', subtitle: 'Urus pertanyaan baharu dan gerakkan prospek ke quotation.', action: '+ New Lead' },
   customers: { eyebrow: 'CRM / Customers', title: 'Customers', subtitle: 'Satu profil pelanggan untuk semua sejarah perjalanan.', action: '+ New Customer' },
   pipeline: { eyebrow: 'CRM / Sales Pipeline', title: 'Sales Pipeline', subtitle: 'Lihat pergerakan lead dari pertanyaan ke confirmed booking.', action: '+ New Lead' },
@@ -124,6 +125,16 @@ function dashboardDateInRange(value, range) {
   if (range === 'Custom Date') return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
   return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
 }
+function quotationCreatedDate(quotation) {
+  return quotation.createdAt || quotation.quotationDate || quotation.createdDate || quotation.travelDate;
+}
+function dashboardDateInPreviousMonth(value) {
+  const date = parseBookingDate(value);
+  if (!date) return false;
+  const now = new Date();
+  const previousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  return date.getFullYear() === previousMonth.getFullYear() && date.getMonth() === previousMonth.getMonth();
+}
 function customerNationalityStats() {
   const counts = new Map();
   storedCustomers().forEach(customer => {
@@ -136,7 +147,11 @@ function customerNationalityStats() {
 function dashboard() {
   const leads = storedLeads(), quotations = storedQuotations(), bookings = storedBookings(), invoices = storedInvoices();
   const scopedLeads = leads.filter(item => dashboardDateInRange(item.receivedDate, state.range));
-  const scopedQuotations = quotations.filter(item => dashboardDateInRange(item.travelDate, state.range));
+  const scopedQuotations = quotations.filter(item => dashboardDateInRange(quotationCreatedDate(item), state.range));
+  const monthlyLeads = leads.filter(item => dashboardDateInRange(item.receivedDate, 'This Month')).length;
+  const previousMonthLeads = leads.filter(item => dashboardDateInPreviousMonth(item.receivedDate)).length;
+  const monthlyQuotations = quotations.filter(item => dashboardDateInRange(quotationCreatedDate(item), 'This Month')).length;
+  const previousMonthQuotations = quotations.filter(item => dashboardDateInPreviousMonth(quotationCreatedDate(item))).length;
   const scopedBookings = bookings.filter(item => item.status !== 'CANCEL' && dashboardDateInRange(item.startDate, state.range));
   const confirmed = scopedBookings.filter(item => item.status === 'CONFIRMED');
   const bookingValue = scopedBookings.reduce((sum, item) => sum + Number(String(item.sales || item.value || 0).replace(/[^0-9.-]/g, '') || 0), 0);
@@ -153,12 +168,70 @@ function dashboard() {
   const salesMonthly = monthlyInvoices.reduce((sum, item) => sum + Number(String(item.total || 0).replace(/[^0-9.-]/g, '') || 0), 0);
   const completedTours = bookings.filter(isCompletedBooking);
   const salesComplete = completedTours.reduce((sum, item) => sum + bookingSalesValue(item), 0);
+  const expectedSales = scopedBookings
+    .filter(item => ['CONFIRMED', 'ON GOING'].includes(String(item.status || '').trim().toUpperCase()) || isCompletedBooking(item))
+    .reduce((sum, item) => sum + bookingSalesValue(item), 0);
   const conversionRate = scopedLeads.length ? `${((won / scopedLeads.length) * 100).toFixed(1)}%` : '0.0%';
   const nationalityStats = customerNationalityStats();
   const maxNationality = Math.max(1, ...nationalityStats.map(([, count]) => count));
   const row = item => `<tr><td><strong>${item.orderId || '—'}</strong></td><td>${item.customer || '—'}</td><td>${packageDisplay(item.package || item.name)}</td><td>${formatTravelDate(item.startDate)}</td><td>${item.sales || '—'}</td><td><span class="status ${String(item.status || '').toLowerCase().replaceAll(' ','-')}">${item.status || '—'}</span></td></tr>`;
   const nationalityPanel = nationalityStats.length ? nationalityStats.map(([nationality, count]) => `<div class="nationality-row"><span>${escapeMarkup(nationality)}</span><div class="nationality-bar"><i style="width:${Math.round(count / maxNationality * 100)}%"></i></div><b>${count}</b></div>`).join('') : '<div class="empty-bookings">Tiada data nationality.</div>';
-  return `<section class="dashboard-view"><div class="metrics">${metric('New Leads',scopedLeads.filter(item => item.status === 'New Lead').length,'Current filter','teal')}${metric('Quotation',scopedQuotations.length,'Quotation dalam filter','blue')}${metric('Won',won,'Closed successfully','violet')}${metric('Conversion Rate',conversionRate,'New Leads → Won','green')}${metric('Sales Monthly',dashboardMoney(salesMonthly),'Invoice generated this month','violet')}${metric('Sales Complete',dashboardMoney(salesComplete),`${completedTours.length} completed tour${completedTours.length === 1 ? '' : 's'}`,'green')}${metric('Cash Collected',dashboardMoney(cashCollected),'Payments received','amber')}${metric('Outstanding',dashboardMoney(outstanding),`${invoices.filter(item => invoicePaymentState(item).balance > 0).length} invoices need follow-up`,'red')}${metric('Upcoming Trips',upcoming.length,'Next 30 days','green')}</div><div class="dashboard-grid"><div class="main-column"><article class="panel funnel-panel"><div class="panel-head"><div><h2>Sales funnel</h2><p>Data sebenar mengikut ${state.range.toLowerCase()}</p></div><button class="ghost-btn" data-nav="pipeline">View pipeline <span>→</span></button></div><div class="funnel">${[['Leads',funnel.leads,'teal'],['Quotation',funnel.quotation,'blue'],['Booking',funnel.booking,'violet'],['Confirmed',funnel.confirmed,'amber']].map(([label,value]) => `<div class="funnel-row"><span>${label}</span><div class="bar"><i style="width:${Math.round(value / maxFunnel * 100)}%"></i></div><b>${value}</b></div>`).join('')}</div></article><article class="panel"><div class="panel-head"><div><h2>Recent bookings</h2><p>Booking terbaru dalam source of truth</p></div><button class="ghost-btn" data-nav="bookings">View all <span>→</span></button></div><div class="table-wrap"><table><thead><tr><th>Booking</th><th>Customer</th><th>Package</th><th>Travel date</th><th>Value</th><th>Status</th></tr></thead><tbody>${recent.length ? recent.map(row).join('') : '<tr><td colspan="6" class="empty-cell">Tiada booking.</td></tr>'}</tbody></table></div></article></div><aside class="side-column"><article class="panel attention"><div class="panel-head"><div><h2>Needs attention</h2><p>Tindakan berdasarkan rekod semasa</p></div><span class="count-badge">${invoices.filter(item => invoicePaymentState(item).balance > 0).length + followups.length + upcomingWeek.length}</span></div><div class="attention-list"><div><span class="attention-icon red-bg">!</span><section><strong>Outstanding payment</strong><small>${invoices.filter(item => invoicePaymentState(item).balance > 0).length} invoice belum selesai</small></section><b data-nav="outstanding">→</b></div><div><span class="attention-icon amber-bg">◷</span><section><strong>Follow-ups due</strong><small>${followups.length} follow-up perlu tindakan</small></section><b data-nav="followups">→</b></div><div><span class="attention-icon blue-bg">⌂</span><section><strong>Trips this week</strong><small>${upcomingWeek.length} booking perlu persediaan</small></section><b data-nav="upcoming">→</b></div></div></article><article class="panel mini-calendar"><div class="panel-head"><div><h2>Upcoming travel</h2><p>Next 7 days</p></div></div>${upcomingWeek.length ? upcomingWeek.map(item => { const date = parseBookingDate(item.startDate); return `<div class="trip"><span class="date-box"><b>${String(date.getDate()).padStart(2,'0')}</b><small>${new Intl.DateTimeFormat('en',{month:'short'}).format(date).toUpperCase()}</small></span><section><strong>${packageDisplay(item.package || item.name)}</strong><small>${item.customer || 'Customer'} · ${item.adult || 0} travellers</small></section><span class="teal-tag">${item.status || 'Ready'}</span></div>`; }).join('') : '<div class="empty-bookings">Tiada perjalanan dalam 7 hari.</div>'}</article><article class="panel nationality-panel"><div class="panel-head"><div><h2>Customer nationality</h2><p>Jumlah customer mengikut nationality</p></div></div><div class="nationality-list">${nationalityPanel}</div></article></aside></div></section>`;
+  return `<section class="dashboard-view"><div class="metrics">${metric('Total Leads',monthlyLeads,`Bulan ini · Bulan lalu: ${previousMonthLeads}`,'teal')}${metric('Quotation',monthlyQuotations,`Bulan ini · Bulan lalu: ${previousMonthQuotations}`,'blue')}${metric('Won',won,'Closed successfully','violet')}${metric('Conversion Rate',conversionRate,'New Leads → Won','green')}${metric('Sales Monthly',dashboardMoney(salesMonthly),'Invoice generated this month','violet')}${metric('Expected Sales',dashboardMoney(expectedSales),'Confirmed + ongoing + completed','blue')}${metric('Sales Complete',dashboardMoney(salesComplete),`${completedTours.length} completed tour${completedTours.length === 1 ? '' : 's'}`,'green')}${metric('Cash Collected',dashboardMoney(cashCollected),'Payments received','amber')}${metric('Outstanding',dashboardMoney(outstanding),`${invoices.filter(item => invoicePaymentState(item).balance > 0).length} invoices need follow-up`,'red')}${metric('Upcoming Trips',upcoming.length,'Next 30 days','green')}</div><div class="dashboard-grid"><div class="main-column"><article class="panel funnel-panel"><div class="panel-head"><div><h2>Sales funnel</h2><p>Data sebenar mengikut ${state.range.toLowerCase()}</p></div><button class="ghost-btn" data-nav="pipeline">View pipeline <span>→</span></button></div><div class="funnel">${[['Leads',funnel.leads,'teal'],['Quotation',funnel.quotation,'blue'],['Booking',funnel.booking,'violet'],['Confirmed',funnel.confirmed,'amber']].map(([label,value]) => `<div class="funnel-row"><span>${label}</span><div class="bar"><i style="width:${Math.round(value / maxFunnel * 100)}%"></i></div><b>${value}</b></div>`).join('')}</div></article><article class="panel"><div class="panel-head"><div><h2>Recent bookings</h2><p>Booking terbaru dalam source of truth</p></div><button class="ghost-btn" data-nav="bookings">View all <span>→</span></button></div><div class="table-wrap"><table><thead><tr><th>Booking</th><th>Customer</th><th>Package</th><th>Travel date</th><th>Value</th><th>Status</th></tr></thead><tbody>${recent.length ? recent.map(row).join('') : '<tr><td colspan="6" class="empty-cell">Tiada booking.</td></tr>'}</tbody></table></div></article></div><aside class="side-column"><article class="panel attention"><div class="panel-head"><div><h2>Needs attention</h2><p>Tindakan berdasarkan rekod semasa</p></div><span class="count-badge">${invoices.filter(item => invoicePaymentState(item).balance > 0).length + followups.length + upcomingWeek.length}</span></div><div class="attention-list"><div><span class="attention-icon red-bg">!</span><section><strong>Outstanding payment</strong><small>${invoices.filter(item => invoicePaymentState(item).balance > 0).length} invoice belum selesai</small></section><b data-nav="outstanding">→</b></div><div><span class="attention-icon amber-bg">◷</span><section><strong>Follow-ups due</strong><small>${followups.length} follow-up perlu tindakan</small></section><b data-nav="followups">→</b></div><div><span class="attention-icon blue-bg">⌂</span><section><strong>Trips this week</strong><small>${upcomingWeek.length} booking perlu persediaan</small></section><b data-nav="upcoming">→</b></div></div></article><article class="panel mini-calendar"><div class="panel-head"><div><h2>Upcoming travel</h2><p>Next 7 days</p></div></div>${upcomingWeek.length ? upcomingWeek.map(item => { const date = parseBookingDate(item.startDate); return `<div class="trip"><span class="date-box"><b>${String(date.getDate()).padStart(2,'0')}</b><small>${new Intl.DateTimeFormat('en',{month:'short'}).format(date).toUpperCase()}</small></span><section><strong>${packageDisplay(item.package || item.name)}</strong><small>${item.customer || 'Customer'} · ${item.adult || 0} travellers</small></section><span class="teal-tag">${item.status || 'Ready'}</span></div>`; }).join('') : '<div class="empty-bookings">Tiada perjalanan dalam 7 hari.</div>'}</article><article class="panel nationality-panel"><div class="panel-head"><div><h2>Customer nationality</h2><p>Jumlah customer mengikut nationality</p></div></div><div class="nationality-list">${nationalityPanel}</div></article></aside></div></section>`;
+}
+
+function salesTeamMembers() {
+  const assignedNames = [
+    ...registeredStaff(),
+    ...storedLeads().map(item => item.assignee),
+    ...storedQuotations().map(item => item.assignee),
+    ...storedBookings().map(item => item.assignee),
+    ...storedInvoices().map(item => item.assignee),
+  ].map(name => String(name || '').trim()).filter(Boolean);
+  return [...new Map(assignedNames.map(name => [name.toLowerCase(), name])).values()];
+}
+function isAssignedTo(record, staffName) {
+  return String(record?.assignee || '').trim().toLowerCase() === String(staffName || '').trim().toLowerCase();
+}
+function salesTeamPerformance() {
+  const leads = storedLeads().filter(item => dashboardDateInRange(item.receivedDate, 'This Month'));
+  const quotations = storedQuotations().filter(item => dashboardDateInRange(item.travelDate, 'This Month'));
+  const bookings = storedBookings().filter(item => dashboardDateInRange(item.startDate, 'This Month'));
+  return salesTeamMembers().map(name => {
+    const staffLeads = leads.filter(item => isAssignedTo(item, name));
+    const staffQuotations = quotations.filter(item => isAssignedTo(item, name));
+    const staffBookings = bookings.filter(item => isAssignedTo(item, name));
+    const activeBookings = staffBookings.filter(item => ['CONFIRMED', 'ON GOING'].includes(String(item.status || '').trim().toUpperCase()));
+    const completedBookings = staffBookings.filter(isCompletedBooking);
+    const wonLeadRecords = staffLeads.filter(item => String(item.status || '').trim().toLowerCase() === 'won');
+    const wonLeads = wonLeadRecords.length;
+    return {
+      name,
+      leads: staffLeads.length,
+      quotations: staffQuotations.length,
+      activeOrders: activeBookings.length,
+      expectedSales: activeBookings.reduce((sum, item) => sum + bookingSalesValue(item), 0),
+      completedSales: completedBookings.reduce((sum, item) => sum + bookingSalesValue(item), 0),
+      closedDeals: wonLeads,
+      closedValue: wonLeadRecords.reduce((sum, item) => sum + bookingSalesValue(item), 0),
+      conversion: staffLeads.length ? wonLeads / staffLeads.length * 100 : 0,
+    };
+  }).sort((a, b) => b.expectedSales - a.expectedSales || b.completedSales - a.completedSales || a.name.localeCompare(b.name));
+}
+function staffInitials(name) {
+  return String(name || '').split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase();
+}
+function salesTeamView() {
+  const performance = salesTeamPerformance();
+  const cards = performance.map((staff, index) => {
+    const activity = staff.leads + staff.quotations + staff.activeOrders + staff.expectedSales + staff.completedSales;
+    const badge = index < 2 && activity > 0
+      ? '<span class="team-performance-badge top">♙ Top Performer</span>'
+      : activity > 0
+      ? '<span class="team-performance-badge track">On Track</span>'
+      : '<span class="team-performance-badge inactive">No Activity</span>';
+    return `<article class="team-roster-card"><div class="team-card-top"><span class="team-roster-avatar">${staffInitials(staff.name)}</span>${badge}</div><div class="team-card-profile"><h3>${escapeMarkup(staff.name)}</h3><p>Sales Representative</p></div><div class="team-card-stats"><div class="team-stat-main"><span>Active orders:</span><strong>${staff.activeOrders} ${staff.activeOrders === 1 ? 'Order' : 'Orders'}</strong></div><div class="team-stat-split"><span>Leads: <b>${staff.leads}</b></span><span>Closing deals: <b>${staff.closedDeals}</b></span></div><div class="team-card-conversion"><span>Conversion</span><b>${staff.conversion.toFixed(1)}%</b></div><div class="team-total-closing"><span>Total closing berjaya:</span><strong>${dashboardMoney(staff.closedValue)}</strong></div></div></article>`;
+  }).join('');
+  return `<section class="sales-team-view"><article class="panel team-roster-panel"><div class="team-roster-head"><div><h2>Sales Representatives Roster</h2><p>Prestasi bulan ${escapeMarkup(monthLabel(currentMonthKey()))} berdasarkan lead, quotation dan booking.</p></div><span class="team-period">This Month</span></div><div class="team-roster-grid">${cards || '<div class="empty-bookings">Tiada staff berdaftar.</div>'}</div></article></section>`;
 }
 
 function localDateKey(offset = 0) {
@@ -378,6 +451,11 @@ function invoicePaymentState(invoice) {
 function paymentFields(summary) {
   return '<label>Invoice total<input name="invoiceTotal" value="RM ' + summary.total.toFixed(2) + '" readonly /></label><label>Payment type<select name="paymentType"><option value="deposit">Deposit</option><option value="full">Full payment</option></select></label><label>Jumlah payment<input name="paymentAmount" type="number" min="0.01" max="' + summary.balance.toFixed(2) + '" step="0.01" placeholder="0.00" required /></label><label>Payment sebelum ini<input name="previousPayment" value="RM ' + summary.paid.toFixed(2) + '" readonly /></label><label>Baki outstanding sebelum ini<input name="previousOutstanding" value="RM ' + summary.balance.toFixed(2) + '" readonly /></label><label>Baki terkini<input name="balancePayment" value="RM ' + summary.balance.toFixed(2) + '" readonly /></label>';
 }
+function bookingMatchesInvoice(booking, invoiceId) {
+  if (!booking || !invoiceId) return false;
+  if (booking.invoiceId === invoiceId || booking.invoice === invoiceId) return true;
+  return String(booking.name || '').endsWith(' — ' + invoiceId);
+}
 function invoicePaymentModal(invoice) {
   const summary = invoicePaymentState(invoice);
   const payload = encodeURIComponent(JSON.stringify(invoice));
@@ -422,8 +500,8 @@ function recordInvoicePayment(invoice, paymentType, paymentAmount) {
   localStorage.setItem('milas-invoices', JSON.stringify(invoices));
   const leads = storedLeads(), lead = leads.find(item => item.id === current.leadId || item.id === current.quotationSnapshot?.leadId);
   if (lead) { lead.status = 'Won'; localStorage.setItem('milas-leads', JSON.stringify(leads)); }
-  const bookings = storedBookings(), booking = bookings.find(item => item.invoiceId === current.id);
-  if (booking) { booking.payment = paymentLabel + ' (RM ' + amount.toFixed(2) + ')'; booking.paymentAmount = current.paymentAmount; booking.balancePayment = newBalance.toFixed(2); persistSharedCollection('bookings', bookings); }
+  const bookings = storedBookings(), booking = bookings.find(item => bookingMatchesInvoice(item, current.id));
+  if (booking) { booking.invoiceId = booking.invoiceId || current.id; booking.invoice = booking.invoice || current.id; booking.payment = paymentLabel + ' (RM ' + amount.toFixed(2) + ')'; booking.paymentAmount = current.paymentAmount; booking.balancePayment = newBalance.toFixed(2); persistSharedCollection('bookings', bookings); }
   else { bookings.unshift({ status: 'NEW ORDER', name: (current.packageName || 'Invoice') + ' — ' + current.id, bookingDate: new Date().toLocaleDateString('en-GB'), startDate: current.travelDate || '', assignee: current.assignee || current.quotationSnapshot?.assignee || '', channel: 'Quotation', supplier: 'Pending', type: 'Multi Day', customer: current.customer || '', package: current.packageName || '', adult: current.adults || '0', children: current.children || '0', sales: 'RM ' + summary.total.toFixed(2), payment: paymentLabel + ' (RM ' + amount.toFixed(2) + ')', paymentAmount: current.paymentAmount, balancePayment: newBalance.toFixed(2), email: current.email || '', orderId: nextBookingId(bookings), proof: 'Attached', invoice: current.id, invoiceId: current.id, commission: '5%' }); persistSharedCollection('bookings', bookings); }
   const syncedBooking = bookings.find(item => item.invoiceId === current.id);
   if (syncedBooking) {
@@ -600,6 +678,7 @@ function handleQuotationSubmit(event) {
   quotation.total = quotationTotal(event.target).toFixed(2);
   const quotations = storedQuotations();
   const index = quotations.findIndex(item => item.id === quotation.id);
+  if (index < 0) quotation.createdAt = new Date().toISOString();
   if (index >= 0) quotations[index] = {...quotations[index], ...quotation}; else quotations.unshift(quotation);
   localStorage.setItem('milas-quotations', JSON.stringify(quotations));
   document.querySelector('#quotationModal')?.remove();
@@ -923,8 +1002,10 @@ function reconcileInvoiceBookings(records) {
   invoices.forEach(invoice => {
     const summary = invoicePaymentState(invoice);
     if (!invoice.id || summary.paid <= 0) return;
-    const existing = records.find(record => record.invoiceId === invoice.id || record.invoice === invoice.id);
+    const existing = records.find(record => bookingMatchesInvoice(record, invoice.id));
     if (existing) {
+      existing.invoiceId = existing.invoiceId || invoice.id;
+      existing.invoice = existing.invoice || invoice.id;
       const fields = invoiceBookingFields(invoice, summary);
       const fieldsChanged = Object.entries(fields).some(([key, value]) => JSON.stringify(existing[key]) !== JSON.stringify(value));
       if (fieldsChanged) { Object.assign(existing, fields); changed = true; }
@@ -973,11 +1054,11 @@ function reconcileInvoiceBookings(records) {
   return records;
 }
 function storedBookings() {
-  if (Array.isArray(sharedData.bookings)) return syncBookingStatuses(reconcileInvoiceBookings(sharedData.bookings));
+  if (Array.isArray(sharedData.bookings)) return syncBookingStatuses(normaliseBookingSales(reconcileInvoiceBookings(sharedData.bookings)));
   try {
     const records = JSON.parse(localStorage.getItem('milas-bookings') || 'null') || bookingSeed.map(record => ({...record}));
-    return syncBookingStatuses(reconcileInvoiceBookings(records));
-  } catch { return syncBookingStatuses(reconcileInvoiceBookings(bookingSeed.map(record => ({...record})))); }
+    return syncBookingStatuses(normaliseBookingSales(reconcileInvoiceBookings(records)));
+  } catch { return syncBookingStatuses(normaliseBookingSales(reconcileInvoiceBookings(bookingSeed.map(record => ({...record}))))); }
 }
 function bookingCount(records, status) {
   return records.filter(item => item.status === status).length.toLocaleString('en-US');
@@ -1064,7 +1145,7 @@ function bookingPaymentStatus(record) {
 }
 
 function bookingSupplierMessage(record) {
-  return ['Booking request', 'Booking ID: ' + (record.orderId || '—'), 'Customer: ' + (record.customer || '—'), 'Package: ' + packageDisplay(record.package || record.name), 'Travel date: ' + formatTravelDate(record.startDate), 'Travellers: ' + (record.adult || '0') + ' adult, ' + (record.children || '0') + ' child', 'Sales amount: ' + (record.sales || '—'), 'Payment status: ' + bookingPaymentStatus(record)].join('\n');
+  return ['Booking request', 'Booking ID: ' + (record.orderId || '—'), 'Customer: ' + (record.customer || '—'), 'Package: ' + packageDisplay(record.package || record.name), 'Travel date: ' + formatTravelDate(record.startDate), 'Travellers: ' + (record.adult || '0') + ' adult, ' + (record.children || '0') + ' child', 'Sales amount: ' + bookingSalesDisplay(record), 'Payment status: ' + bookingPaymentStatus(record)].join('\n');
 }
 
 function bookingSendModal(record) {
@@ -1126,22 +1207,45 @@ function isCompletedBooking(record) {
   return String(record?.status || '').trim().toUpperCase() === 'COMPLETE';
 }
 function bookingSalesValue(record) {
-  return Number(String(record?.sales ?? record?.value ?? 0).replace(/[^0-9.-]/g, '') || 0);
+  const storedValue = [record?.sales, record?.total, record?.bookingValue, record?.value]
+    .map(value => Number(String(value ?? '').replace(/[^0-9.-]/g, '') || 0))
+    .find(value => value > 0);
+  if (Number.isFinite(storedValue) && storedValue > 0) return storedValue;
+  const rates = packageRates(record?.package);
+  const adults = Math.max(0, Number(record?.adult || 0) || 0);
+  const children = Math.max(0, Number(record?.children || 0) || 0);
+  const infants = Math.max(0, Number(record?.infant || 0) || 0);
+  return adults * rates.adult + children * rates.child + infants * rates.infant;
+}
+function bookingSalesDisplay(record) {
+  const value = bookingSalesValue(record);
+  return value > 0 ? dashboardMoney(value) : (record?.sales || record?.total || '—');
+}
+function normaliseBookingSales(records) {
+  let changed = false;
+  const normalised = records.map(record => {
+    const sales = bookingSalesDisplay(record);
+    if (sales === '—' || record.sales === sales) return record;
+    changed = true;
+    return {...record, sales};
+  });
+  if (changed) persistSharedCollection('bookings', normalised);
+  return normalised;
 }
 
 function bookingEditor(record = {}) {
   record = {...record}; const isNew = !record.orderId; if (isNew) record.orderId = nextBookingId(storedBookings());
   record.payment = bookingPaymentStatus(record);
-  const fields = getBookingFields(), packages = storedTourPackages();
+  const fields = getBookingFields(), fieldConfig = formFieldConfig('bookingForm'), packages = storedTourPackages();
   const packageOptions = `<option value="">Pilih tour package...</option>${packages.map(item => `<option value="${item.id}" ${record.package===item.id||record.package===item.name?'selected':''}>${item.id} — ${item.name}</option>`).join('')}${record.package && !packages.some(item => item.id===record.package || item.name===record.package) ? `<option selected value="${record.package}">Existing — ${record.package}</option>` : ''}`;
-  const fieldMarkup = fields.filter(([, , visible]) => visible !== false).map(([key,label]) => key === 'payment'
+  const fieldMarkup = fields.filter(([key, , visible]) => key !== 'payment' && visible !== false && !fieldConfig.hidden.includes(key)).map(([key,label]) => key === 'payment'
     ? '<label>Payment<select name="payment"><option value="">Pilih status payment...</option>' + paymentStatuses().map(status => '<option value="' + status + '" ' + (record.payment===status ? 'selected' : '') + '>' + status + '</option>').join('') + (record.payment && !paymentStatuses().includes(record.payment) ? '<option selected value="' + record.payment + '">Existing — ' + record.payment + '</option>' : '') + '</select></label>'
     : key === 'channel'
     ? '<label>Source<select name="channel"><option value="">Pilih source...</option>' + bookingSources().map(source => '<option value="' + source + '" ' + (record.channel===source ? 'selected' : '') + '>' + source + '</option>').join('') + (record.channel && !bookingSources().includes(record.channel) ? '<option selected value="' + record.channel + '">Existing — ' + record.channel + '</option>' : '') + '</select></label>'
     : key === 'assignee'
     ? assignFieldMarkup(record.assignee, true)
     : key === 'startDate'
-    ? '<label>Start date<input type="date" name="startDate" value="' + dateInputValue(record.startDate || record.travelDate) + '" min="' + todayIso() + '" required /></label>'
+    ? '<label>Start date<input type="date" name="startDate" value="' + dateInputValue(record.startDate || record.travelDate) + '" min="' + (isNew ? todayIso() : '') + '" required /></label>'
     : key === 'phone'
     ? phoneFieldMarkup('phone', label, record.phone)
     : key === 'package'
@@ -1159,7 +1263,7 @@ function fieldManager() {
 function allBookingsViewV3() {
   const records = storedBookings();
   const groups = ['COMPLETE','CANCEL','ON GOING','CONFIRMED','NEW ORDER'];
-  return `<section class="all-bookings"><div class="booking-toolbar"><div class="search-field">⌕ <input placeholder="Search bookings..." /></div><button class="view-control">▤ View: List</button><button class="view-control">▦ Group by: Status</button><button class="view-control">Filter</button><span class="toolbar-spacer"></span></div>${groups.map(status=>{const rows=records.filter(r=>r.status===status);return `<article class="booking-status-group ${status==='ON GOING'?'expanded':''}"><button class="status-group-heading"><span class="status-caret">${status==='ON GOING'?'⌄':'›'}</span><span class="booking-status ${status==='COMPLETE'?'complete':status==='CANCEL'?'cancel':status==='ON GOING'?'ongoing':status==='CONFIRMED'?'confirmed':'new-order'}"><b>●</b>${status}</span><span class="booking-count">${bookingCount(records, status)}</span><span class="status-actions">••• &nbsp;＋</span></button><div class="booking-grid-wrap"><table class="clickup-booking-table"><thead><tr>${['Name','Booking Date','Start date','Assignee','Channel Platform','Supplier Confirmation','Type','Customer','Package','Adult','Children','Sales Amount','Payment','Email','OrderID','Order Proof/Payment','Invoice','Comm 5%'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr data-edit-booking="${encodeURIComponent(JSON.stringify(r))}"><td><span class="booking-check">✓</span><strong>${r.name}</strong></td><td>${r.bookingDate}</td><td>${r.startDate}</td><td>${r.assignee}</td><td><span class="field-chip pink">${r.channel}</span></td><td><span class="field-chip ${r.supplier==='Confirm'?'green':'yellow'}">${r.supplier}</span></td><td><span class="field-chip blue">${r.type}</span></td><td>${r.customer||'—'}</td><td>${r.package||'—'}</td><td>${r.adult||'—'}</td><td>${r.children||'—'}</td><td>${r.sales||'—'}</td><td>${r.payment||'—'}</td><td>${r.email||'—'}</td><td>${r.orderId||'—'}</td><td class="clip">${r.proof||'⌕'}</td><td class="clip">${r.invoice||'⌕'}</td><td>${r.commission||'—'}</td></tr>`).join(''):`<tr><td colspan="18" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task" data-new-booking>＋ Add Task</button></div></article>`;}).join('')}</section>`;
+  return `<section class="all-bookings"><div class="booking-toolbar"><div class="search-field">⌕ <input placeholder="Search bookings..." /></div><button class="view-control">▤ View: List</button><button class="view-control">▦ Group by: Status</button><button class="view-control">Filter</button><span class="toolbar-spacer"></span></div>${groups.map(status=>{const rows=records.filter(r=>r.status===status);return `<article class="booking-status-group ${status==='ON GOING'?'expanded':''}"><button class="status-group-heading"><span class="status-caret">${status==='ON GOING'?'⌄':'›'}</span><span class="booking-status ${status==='COMPLETE'?'complete':status==='CANCEL'?'cancel':status==='ON GOING'?'ongoing':status==='CONFIRMED'?'confirmed':'new-order'}"><b>●</b>${status}</span><span class="booking-count">${bookingCount(records, status)}</span><span class="status-actions">••• &nbsp;＋</span></button><div class="booking-grid-wrap"><table class="clickup-booking-table"><thead><tr>${['Name','Booking Date','Start date','Assignee','Channel Platform','Supplier Confirmation','Type','Customer','Package','Adult','Children','Sales Amount','Payment','Email','OrderID','Order Proof/Payment','Invoice','Comm 5%'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr data-edit-booking="${encodeURIComponent(JSON.stringify(r))}"><td><span class="booking-check">✓</span><strong>${r.name}</strong></td><td>${r.bookingDate}</td><td>${r.startDate}</td><td>${r.assignee}</td><td><span class="field-chip pink">${r.channel}</span></td><td><span class="field-chip ${r.supplier==='Confirm'?'green':'yellow'}">${r.supplier}</span></td><td><span class="field-chip blue">${r.type}</span></td><td>${r.customer||'—'}</td><td>${r.package||'—'}</td><td>${r.adult||'—'}</td><td>${r.children||'—'}</td><td>${bookingSalesDisplay(r)}</td><td>${r.payment||'—'}</td><td>${r.email||'—'}</td><td>${r.orderId||'—'}</td><td class="clip">${r.proof||'⌕'}</td><td class="clip">${r.invoice||'⌕'}</td><td>${r.commission||'—'}</td></tr>`).join(''):`<tr><td colspan="18" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task" data-new-booking>＋ Add Task</button></div></article>`;}).join('')}</section>`;
 }
 
 const defaultBookingFields = [['orderId','Booking ID'],['assignee','Assign'],['name','Booking name'],['bookingDate','Booking date'],['startDate','Start date'],['channel','Channel platform'],['supplier','Supplier confirmation'],['type','Type'],['customer','Customer'],['phone','Phone number'],['email','Email'],['nationality','Nationality'],['package','Package'],['optionalPackage','Optional package'],['addOns','Add-ons'],['adult','Adults'],['children','Children'],['infant','Infants'],['singleSupplement','Single supplement'],['discount','Discount'],['sales','Sales amount'],['payment','Status payment'],['paymentAmount','Amount payment'],['amountOutstanding','Amount outstanding'],['total','Total'],['proof','Order proof / payment'],['invoice','Invoice'],['commission','Commission 5%']];
@@ -1192,7 +1296,7 @@ function fieldManager() {
 
 function bookingSummaryTableLegacy(rows) {
   const headers = ['Booking ID','Customer Name','Package','Travel date','Booking status','Sales amount','Status payment',''];
-  return `<div class="booking-grid-wrap"><table class="booking-summary-table"><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td class="booking-id"><strong>${r.orderId||'—'}</strong></td><td>${r.customer||'—'}</td><td>${r.package||r.name}</td><td>${r.startDate||'—'}</td><td><span class="booking-status-cell ${r.status.toLowerCase().replaceAll(' ','-')}">${r.status}</span></td><td>${r.sales||'—'}</td><td><span class="payment-cell">${bookingPaymentStatus(r)}</span></td><td><button class="open-booking" data-open-booking="${encodeURIComponent(JSON.stringify(r))}">Open <span>→</span></button></td></tr>`).join(''):`<tr><td colspan="8" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task">＋ Add Task</button></div>`;
+  return `<div class="booking-grid-wrap"><table class="booking-summary-table"><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td class="booking-id"><strong>${r.orderId||'—'}</strong></td><td>${r.customer||'—'}</td><td>${r.package||r.name}</td><td>${r.startDate||'—'}</td><td><span class="booking-status-cell ${r.status.toLowerCase().replaceAll(' ','-')}">${r.status}</span></td><td>${bookingSalesDisplay(r)}</td><td><span class="payment-cell">${bookingPaymentStatus(r)}</span></td><td><button class="open-booking" data-open-booking="${encodeURIComponent(JSON.stringify(r))}">Open <span>→</span></button></td></tr>`).join(''):`<tr><td colspan="8" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task">＋ Add Task</button></div>`;
 }
 
 function bookingSummaryTable(rows) {
@@ -1205,11 +1309,11 @@ function bookingSummaryTable(rows) {
 }
 function bookingSummaryTableBase(rows) {
   const headers = ['Booking ID','Customer Name','Package','Travel date','Booking status','Sales amount','Status payment',''];
-  return `<div class="booking-grid-wrap"><table class="booking-summary-table"><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td class="booking-id"><strong>${r.orderId||'—'}</strong></td><td>${r.customer||'—'}</td><td>${packageDisplay(r.package||r.name)}</td><td>${formatTravelDate(r.startDate)}</td><td><span class="booking-status-cell ${r.status.toLowerCase().replaceAll(' ','-')}">${r.status}</span></td><td>${r.sales||'—'}</td><td><span class="payment-cell">${bookingPaymentStatus(r)}</span></td><td><button class="open-booking" data-open-booking="${encodeURIComponent(JSON.stringify(r))}">Open <span>→</span></button></td></tr>`).join(''):`<tr><td colspan="8" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task">＋ Add Task</button></div>`;
+  return `<div class="booking-grid-wrap"><table class="booking-summary-table"><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td class="booking-id"><strong>${r.orderId||'—'}</strong></td><td>${r.customer||'—'}</td><td>${packageDisplay(r.package||r.name)}</td><td>${formatTravelDate(r.startDate)}</td><td><span class="booking-status-cell ${r.status.toLowerCase().replaceAll(' ','-')}">${r.status}</span></td><td>${bookingSalesDisplay(r)}</td><td><span class="payment-cell">${bookingPaymentStatus(r)}</span></td><td><button class="open-booking" data-open-booking="${encodeURIComponent(JSON.stringify(r))}">Open <span>→</span></button></td></tr>`).join(''):`<tr><td colspan="8" class="empty-cell">Tiada booking dalam status ini.</td></tr>`}</tbody></table><button class="add-task">＋ Add Task</button></div>`;
 }
 
 function bookingCards(rows) {
-  return `<div class="booking-cards">${rows.length ? rows.map(record => `<article class="booking-card"><div><strong>${record.orderId || '—'}</strong><span class="booking-status-cell ${String(record.status || '').toLowerCase().replaceAll(' ','-')}">${record.status || '—'}</span></div><h3>${record.customer || '—'}</h3><p>${packageDisplay(record.package || record.name)}</p><small>${formatTravelDate(record.startDate)} · ${record.sales || '—'}</small><button class="ghost-btn open-booking" data-open-booking="${encodeURIComponent(JSON.stringify(record))}">Open</button></article>`).join('') : '<div class="empty-bookings">Tiada booking yang sepadan.</div>'}</div>`;
+  return `<div class="booking-cards">${rows.length ? rows.map(record => `<article class="booking-card"><div><strong>${record.orderId || '—'}</strong><span class="booking-status-cell ${String(record.status || '').toLowerCase().replaceAll(' ','-')}">${record.status || '—'}</span></div><h3>${record.customer || '—'}</h3><p>${packageDisplay(record.package || record.name)}</p><small>${formatTravelDate(record.startDate)} · ${bookingSalesDisplay(record)}</small><button class="ghost-btn open-booking" data-open-booking="${encodeURIComponent(JSON.stringify(record))}">Open</button></article>`).join('') : '<div class="empty-bookings">Tiada booking yang sepadan.</div>'}</div>`;
 }
 function filteredBookings(records) {
   const search = String(state.bookingSearch || '').trim().toLowerCase();
@@ -1447,7 +1551,7 @@ function genericView(key) {
 
 function settingsView() { return `<section class="settings-grid"><article class="panel settings-nav"><h2>Configuration</h2><button class="setting-active">General settings <span>→</span></button><button>Lead sources <span>→</span></button><button>Package categories <span>→</span></button><button>Supplier types <span>→</span></button><button>Payment methods <span>→</span></button></article><article class="panel settings-content"><div class="panel-head"><div><h2>Users, roles & permissions</h2><p>Permission architecture berpusat — bukan hardcoded di UI.</p></div><button class="primary-btn">+ Invite user</button></div><div class="role-list"><div class="role-row"><div class="avatar teal">AM</div><section><strong>Afiq Milas</strong><small>Super Admin · Last active now</small></section><span class="role-pill">Super Admin</span><button class="icon-btn">•••</button></div><div class="role-row"><div class="avatar blue">SA</div><section><strong>Sarah Ahmad</strong><small>Sales Manager · Last active 12 min ago</small></section><span class="role-pill">Sales Manager</span><button class="icon-btn">•••</button></div><div class="role-row"><div class="avatar purple">RK</div><section><strong>Rizal Karim</strong><small>Operations · Last active yesterday</small></section><span class="role-pill">Operations</span><button class="icon-btn">•••</button></div></div><div class="permission-box"><strong>Permission matrix</strong><p>Roles inherit granular permissions seperti View Lead, Create Quotation, Record Payment dan View Reports.</p><div class="permission-chips"><span>View leads</span><span>Create quotation</span><span>Create booking</span><span>Record payment</span><span>View operations</span><span>View reports</span></div></div></article></section>`; }
 
-function render() { const v=views[state.active], todayCount=upcomingTodayCount(), pendingNewOrders=newOrderCount(), pendingNewLeads=newLeadCount(), dueFollowUps=followUpsDueCount(); document.querySelector('#app').innerHTML=`<div class="app-shell"><aside class="sidebar"><div class="brand"><span class="brand-mark">M</span><span><strong>Milas Travel</strong><small>Unified CRM</small></span></div><div class="workspace-select"><span class="workspace-dot"></span><span>Milas Travel & Tours</span><b>⌄</b></div><nav>${navGroups.map(g=>`<div class="nav-group"><small>${g.label}</small>${g.items.map(([id,label,icon])=>`<button class="nav-item ${state.active===id?'active':''}" data-nav="${id}"><i>${icon}</i>${label}${id==='leads'&&pendingNewLeads?`<em class="nav-count">${pendingNewLeads}</em>`:''}${id==='followups'&&dueFollowUps?`<em class="nav-count">${dueFollowUps}</em>`:''}${id==='outstanding'?'<em>3</em>':''}${id==='bookings'&&pendingNewOrders?`<em class="nav-count">${pendingNewOrders}</em>`:''}${id==='upcoming'&&todayCount?`<em class="nav-count">${todayCount}</em>`:''}</button>`).join('')}</div>`).join('')}</nav><div class="sidebar-footer"><button class="help-link">? <span>Help centre</span></button><div class="user-chip"><div class="avatar teal">AM</div><span><strong>Afiq Milas</strong><small>Super Admin</small></span><b>•••</b></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumbs"><span>${v.eyebrow}</span><b>/</b><strong>${v.title}</strong></div><div class="top-actions"><div class="global-search">⌕ <input id="globalSearch" placeholder="Search anything..." /><kbd>⌘ K</kbd></div><button class="icon-btn notification">♧<i></i></button><button class="mobile-menu">☰</button></div></header><div class="content"><div class="page-heading"><div><h1>${v.title}</h1><p>${v.subtitle}</p></div><div class="heading-actions">${state.active==='dashboard'?`<div class="range-select"><span>◷</span><select id="range"><option ${state.range==='Today'?'selected':''}>Today</option><option ${state.range==='This Week'?'selected':''}>This Week</option><option ${state.range==='This Month'?'selected':''}>This Month</option><option ${state.range==='Custom Date'?'selected':''}>Custom Date</option></select></div>`:''}${v.action?`<button class="primary-btn" id="primaryAction">${v.action}</button>`:''}</div></div>${state.active==='dashboard'?dashboard():state.active==='settings'?settingsView():genericView(state.active)}</div></main></div><div id="toast" class="toast ${state.toast?'show':''}">${state.toast}</div>`; bind(); }
+function render() { const v=views[state.active], todayCount=upcomingTodayCount(), pendingNewOrders=newOrderCount(), pendingNewLeads=newLeadCount(), dueFollowUps=followUpsDueCount(); document.querySelector('#app').innerHTML=`<div class="app-shell"><aside class="sidebar"><div class="brand"><span class="brand-mark">M</span><span><strong>Milas Travel</strong><small>Unified CRM</small></span></div><div class="workspace-select"><span class="workspace-dot"></span><span>Milas Travel & Tours</span><b>⌄</b></div><nav>${navGroups.map(g=>`<div class="nav-group"><small>${g.label}</small>${g.items.map(([id,label,icon])=>`<button class="nav-item ${state.active===id?'active':''}" data-nav="${id}"><i>${icon}</i>${label}${id==='leads'&&pendingNewLeads?`<em class="nav-count">${pendingNewLeads}</em>`:''}${id==='followups'&&dueFollowUps?`<em class="nav-count">${dueFollowUps}</em>`:''}${id==='outstanding'?'<em>3</em>':''}${id==='bookings'&&pendingNewOrders?`<em class="nav-count">${pendingNewOrders}</em>`:''}${id==='upcoming'&&todayCount?`<em class="nav-count">${todayCount}</em>`:''}</button>`).join('')}</div>`).join('')}</nav><div class="sidebar-footer"><button class="help-link">? <span>Help centre</span></button><div class="user-chip"><div class="avatar teal">AM</div><span><strong>Afiq Milas</strong><small>Super Admin</small></span><b>•••</b></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumbs"><span>${v.eyebrow}</span><b>/</b><strong>${v.title}</strong></div><div class="top-actions"><div class="global-search">⌕ <input id="globalSearch" placeholder="Search anything..." /><kbd>⌘ K</kbd></div><button class="icon-btn notification">♧<i></i></button><button class="mobile-menu">☰</button></div></header><div class="content"><div class="page-heading"><div><h1>${v.title}</h1><p>${v.subtitle}</p></div><div class="heading-actions">${state.active==='dashboard'?`<div class="range-select"><span>◷</span><select id="range"><option ${state.range==='Today'?'selected':''}>Today</option><option ${state.range==='This Week'?'selected':''}>This Week</option><option ${state.range==='This Month'?'selected':''}>This Month</option><option ${state.range==='Custom Date'?'selected':''}>Custom Date</option></select></div>`:''}${v.action?`<button class="primary-btn" id="primaryAction">${v.action}</button>`:''}</div></div>${state.active==='dashboard'?dashboard():state.active==='salesTeam'?salesTeamView():state.active==='settings'?settingsView():genericView(state.active)}</div></main></div><div id="toast" class="toast ${state.toast?'show':''}">${state.toast}</div>`; bind(); }
 
 function bind(){ document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{state.active=b.dataset.nav;state.toast='';render()}); document.querySelector('#primaryAction')?.addEventListener('click',()=>{state.toast='Foundation UI ready — workflow action akan disambung pada Milestone 2.';render();setTimeout(()=>{state.toast='';render()},3500)}); document.querySelector('#range')?.addEventListener('change',e=>{state.range=e.target.value;state.toast=`Dashboard ditapis: ${state.range}`;render();setTimeout(()=>{state.toast='';render()},2200)}); document.querySelector('#upcomingMonth')?.addEventListener('change',e=>{state.upcomingMonth=e.target.value;render()}); document.querySelector('#globalSearch')?.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.value){state.toast=`Carian global disediakan untuk: ${e.target.value}`;render()}}); if(state.active==='bookings' && !state.bookingSearch) document.querySelectorAll('.booking-status-group').forEach(group=>{group.classList.remove('expanded'); group.querySelector('.status-caret').textContent='›';}); }
 
@@ -2040,7 +2144,12 @@ document.addEventListener('submit', (event) => {
   const records = storedBookings();
   const original = form.dataset.originalOrderId || record.orderId;
   const index = records.findIndex(item => item.orderId === original);
-  if (index >= 0) records[index] = record; else records.push(record);
+  if (index >= 0) {
+    // Hidden fields are disabled and therefore omitted from FormData. Merge
+    // with the existing record so orderId, invoice links, and other hidden
+    // values are preserved when only the status is changed.
+    records[index] = {...records[index], ...record, orderId: records[index].orderId};
+  } else records.push(record);
   persistSharedCollection('bookings', records);
   syncBookingToCustomer(record);
   document.querySelector('#bookingModal')?.remove();
