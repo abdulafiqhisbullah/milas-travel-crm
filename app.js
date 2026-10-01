@@ -112,7 +112,7 @@ function upcomingMonthOptions(selectedMonth) {
   }
   return options.join('');
 }
-const state = { active: 'dashboard', range: 'This Month', upcomingMonth: currentMonthKey(), bookingSearch: '', bookingFilter: 'All statuses', bookingView: 'list', bookingGroup: 'status', leadSearch: '', leadFilter: 'All statuses', toast: '' };
+const state = { active: 'dashboard', range: 'This Month', upcomingMonth: currentMonthKey(), salesTeamMonth: currentMonthKey(), bookingSearch: '', bookingFilter: 'All statuses', bookingView: 'list', bookingGroup: 'status', leadSearch: '', leadFilter: 'All statuses', toast: '' };
 
 function metric(label, value, note, tone = '') {
   return `<article class="metric ${tone}"><div class="metric-label">${label}<span class="metric-dot"></span></div><div class="metric-value">${value}</div><div class="metric-note">${note}</div></article>`;
@@ -162,6 +162,11 @@ function dashboardDateInPreviousMonth(value) {
   const previousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   return date.getFullYear() === previousMonth.getFullYear() && date.getMonth() === previousMonth.getMonth();
 }
+function recordInMonth(value, monthKey) {
+  const date = parseBookingDate(value);
+  if (!date) return monthKey === currentMonthKey();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}` === monthKey;
+}
 function customerNationalityStats() {
   const counts = new Map();
   storedCustomers().forEach(customer => {
@@ -185,7 +190,7 @@ function dashboard() {
   const cashCollected = invoices.reduce((sum, invoice) => sum + invoicePaymentState(invoice).paid, 0);
   const outstanding = invoices.reduce((sum, invoice) => sum + invoicePaymentState(invoice).balance, 0);
   const upcoming = bookings.filter(item => { const date = parseBookingDate(item.startDate); const today = new Date(); const limit = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30); return date && date >= new Date(today.getFullYear(), today.getMonth(), today.getDate()) && date <= limit && !['CANCEL','COMPLETE'].includes(item.status); });
-  const followups = leads.filter(item => item.followUpStatus !== 'Done' && item.followUpDate && item.followUpDate <= localDateKey());
+  const followups = dueFollowUps();
   const funnel = { leads: scopedLeads.length, quotation: scopedQuotations.length, booking: scopedBookings.length, confirmed: confirmed.length };
   const maxFunnel = Math.max(1, funnel.leads, funnel.quotation, funnel.booking, funnel.confirmed);
   const recent = [...bookings].sort((a, b) => (parseBookingDate(b.bookingDate) || 0) - (parseBookingDate(a.bookingDate) || 0)).slice(0, 5);
@@ -213,33 +218,48 @@ function salesTeamMembers() {
     ...storedQuotations().map(item => item.assignee),
     ...storedBookings().map(item => item.assignee),
     ...storedInvoices().map(item => item.assignee),
+    ...storedInvoices().map(item => item.quotationSnapshot?.assignee),
   ].map(name => String(name || '').trim()).filter(Boolean);
   return [...new Map(assignedNames.map(name => [name.toLowerCase(), name])).values()];
 }
 function isAssignedTo(record, staffName) {
-  return String(record?.assignee || '').trim().toLowerCase() === String(staffName || '').trim().toLowerCase();
+  const assignee = record?.assignee || record?.quotationSnapshot?.assignee || '';
+  return String(assignee).trim().toLowerCase() === String(staffName || '').trim().toLowerCase();
 }
 function salesTeamPerformance() {
-  const leads = storedLeads().filter(item => dashboardDateInRange(item.receivedDate, 'This Month'));
-  const quotations = storedQuotations().filter(item => dashboardDateInRange(item.travelDate, 'This Month'));
-  const bookings = storedBookings().filter(item => dashboardDateInRange(item.startDate, 'This Month'));
+  const monthKey = state.salesTeamMonth || currentMonthKey();
+  const leads = storedLeads().filter(item => recordInMonth(item.receivedDate, monthKey));
+  const quotations = storedQuotations().filter(item => recordInMonth(item.travelDate, monthKey));
+  const bookings = storedBookings().filter(item => recordInMonth(item.startDate, monthKey));
+  const invoices = storedInvoices().filter(item => recordInMonth(item.issuedAt || item.createdAt, monthKey));
   return salesTeamMembers().map(name => {
     const staffLeads = leads.filter(item => isAssignedTo(item, name));
     const staffQuotations = quotations.filter(item => isAssignedTo(item, name));
     const staffBookings = bookings.filter(item => isAssignedTo(item, name));
-    const activeBookings = staffBookings.filter(item => ['CONFIRMED', 'ON GOING'].includes(String(item.status || '').trim().toUpperCase()));
+    const staffInvoices = invoices.filter(item => isAssignedTo(item, name));
+    const activeBookings = staffBookings.filter(item => ['NEW ORDER', 'CONFIRMED', 'ON GOING'].includes(String(item.status || '').trim().toUpperCase()));
+    const activeValue = activeBookings.reduce((sum, item) => sum + bookingSalesValue(item), 0);
     const completedBookings = staffBookings.filter(isCompletedBooking);
     const wonLeadRecords = staffLeads.filter(item => String(item.status || '').trim().toLowerCase() === 'won');
+    const paidInvoices = staffInvoices.filter(invoice => {
+      const summary = invoicePaymentState(invoice);
+      return summary.total > 0 && summary.paid > 0;
+    });
+    const closingRecords = paidInvoices.length ? paidInvoices : wonLeadRecords;
     const wonLeads = wonLeadRecords.length;
+    const closingValue = paidInvoices.length
+      ? paidInvoices.reduce((sum, invoice) => sum + invoicePaymentState(invoice).total, 0)
+      : wonLeadRecords.reduce((sum, item) => sum + bookingSalesValue(item), 0);
     return {
       name,
       leads: staffLeads.length,
       quotations: staffQuotations.length,
       activeOrders: activeBookings.length,
-      expectedSales: activeBookings.reduce((sum, item) => sum + bookingSalesValue(item), 0),
+      activeValue,
+      expectedSales: activeValue,
       completedSales: completedBookings.reduce((sum, item) => sum + bookingSalesValue(item), 0),
-      closedDeals: wonLeads,
-      closedValue: wonLeadRecords.reduce((sum, item) => sum + bookingSalesValue(item), 0),
+      closedDeals: closingRecords.length,
+      closedValue: closingValue,
       conversion: staffLeads.length ? wonLeads / staffLeads.length * 100 : 0,
     };
   }).sort((a, b) => b.expectedSales - a.expectedSales || b.completedSales - a.completedSales || a.name.localeCompare(b.name));
@@ -249,8 +269,9 @@ function staffInitials(name) {
 }
 function salesTeamView() {
   const performance = salesTeamPerformance();
+  const selectedMonth = state.salesTeamMonth || currentMonthKey();
   const cards = performance.map((staff, index) => {
-    const activity = staff.leads + staff.quotations + staff.activeOrders + staff.expectedSales + staff.completedSales;
+    const activity = staff.leads + staff.quotations + staff.activeOrders + staff.closedDeals + staff.activeValue + staff.completedSales + staff.closedValue;
     const badge = index < 2 && activity > 0
       ? '<span class="team-performance-badge top">♙ Top Performer</span>'
       : activity > 0
@@ -258,7 +279,7 @@ function salesTeamView() {
       : '<span class="team-performance-badge inactive">No Activity</span>';
     return `<article class="team-roster-card"><div class="team-card-top"><span class="team-roster-avatar">${staffInitials(staff.name)}</span>${badge}</div><div class="team-card-profile"><h3>${escapeMarkup(staff.name)}</h3><p>Sales Representative</p></div><div class="team-card-stats"><div class="team-stat-main"><span>Active orders:</span><strong>${staff.activeOrders} ${staff.activeOrders === 1 ? 'Order' : 'Orders'}</strong></div><div class="team-stat-split"><span>Leads: <b>${staff.leads}</b></span><span>Closing deals: <b>${staff.closedDeals}</b></span></div><div class="team-card-conversion"><span>Conversion</span><b>${staff.conversion.toFixed(1)}%</b></div><div class="team-total-closing"><span>Total closing berjaya:</span><strong>${dashboardMoney(staff.closedValue)}</strong></div></div></article>`;
   }).join('');
-  return `<section class="sales-team-view"><article class="panel team-roster-panel"><div class="team-roster-head"><div><h2>Sales Representatives Roster</h2><p>Prestasi bulan ${escapeMarkup(monthLabel(currentMonthKey()))} berdasarkan lead, quotation dan booking.</p></div><span class="team-period">This Month</span></div><div class="team-roster-grid">${cards || '<div class="empty-bookings">Tiada staff berdaftar.</div>'}</div></article></section>`;
+  return `<section class="sales-team-view"><article class="panel team-roster-panel"><div class="team-roster-head"><div><h2>Sales Representatives Roster</h2><p>Prestasi bulan ${escapeMarkup(monthLabel(selectedMonth))} berdasarkan lead, quotation, booking dan invoice.</p></div><select id="salesTeamMonth" class="team-period" aria-label="Pilih bulan roster">${upcomingMonthOptions(selectedMonth)}</select></div><div class="team-roster-grid">${cards || '<div class="empty-bookings">Tiada staff berdaftar.</div>'}</div></article></section>`;
 }
 
 function localDateKey(offset = 0) {
@@ -823,11 +844,30 @@ function addonEditor(value = '') {
 function serializedAddons(form) {
   return [...form.querySelectorAll('[data-addon-row]')].map(row => ({ name: row.querySelector('[data-addon-name]')?.value.trim() || '', supplierCost: row.querySelector('[data-addon-cost]')?.value || '', margin: row.querySelector('[data-addon-margin]')?.value || '', basePrice: row.querySelector('[data-addon-base]')?.value || '' })).filter(addon => addon.name || addon.supplierCost);
 }
+function availabilityDataFromValue(value) {
+  try {
+    const parsed = JSON.parse(value || 'null');
+    if (Array.isArray(parsed)) return parsed;
+  } catch {}
+  return String(value || '').split(/\n/).map(date => date.trim()).filter(Boolean).map(date => ({ date, capacity: '', status: 'Available' }));
+}
+function availabilityRow(item = {}) {
+  const status = item.status || 'Available';
+  return `<div class="availability-row" data-availability-row><input type="date" data-availability-date value="${item.date || ''}" /><input type="number" min="0" step="1" data-availability-capacity value="${item.capacity ?? ''}" placeholder="Capacity" /><select data-availability-status><option ${status === 'Available' ? 'selected' : ''}>Available</option><option ${status === 'Full' ? 'selected' : ''}>Full</option><option ${status === 'Closed' ? 'selected' : ''}>Closed</option></select><button type="button" class="ghost-btn availability-remove" data-remove-availability>Remove</button></div>`;
+}
+function availabilityEditor(value = '') {
+  const dates = availabilityDataFromValue(value);
+  return `<label class="full-width availability-field">Availability calendar <small class="pricing-note">Tetapkan tarikh yang boleh ditempah, kapasiti dan status setiap tarikh.</small><div class="availability-header"><span>Date</span><span>Capacity</span><span>Status</span><span></span></div><div id="availabilityBuilder">${dates.map(availabilityRow).join('')}</div><button type="button" class="ghost-btn availability-add" data-add-availability>+ Add date</button><input type="hidden" name="availability" value="${String(value || '').replaceAll('"', '&quot;')}" /></label>`;
+}
+function serializedAvailability(form) {
+  return [...form.querySelectorAll('[data-availability-row]')].map(row => ({ date: row.querySelector('[data-availability-date]')?.value || '', capacity: row.querySelector('[data-availability-capacity]')?.value || '', status: row.querySelector('[data-availability-status]')?.value || 'Available' })).filter(item => item.date);
+}
 function productDataFromForm(form) {
   const itinerary = [...form.querySelectorAll('[data-itinerary-day]')].map((day, index) => `Day ${index + 1}\n${day.querySelector('[data-itinerary-details]').value.trim()}`).join('\n\n');
   form.querySelector('input[name="itinerary"]').value = itinerary;
   form.querySelector('input[name="pricing"]').value = JSON.stringify(serializedPricing(form));
   form.querySelector('input[name="addons"]').value = JSON.stringify(serializedAddons(form));
+  form.querySelector('input[name="availability"]').value = JSON.stringify(serializedAvailability(form));
   const formData = new FormData(form);
   const product = Object.fromEntries(formData.entries());
   product.locations = formData.getAll('locations');
@@ -861,7 +901,7 @@ function productEditor(record = {}) {
   const textarea = (key, label, value = product[key] || '') => `<label class="full-width">${label}<textarea name="${key}" rows="4">${value}</textarea></label>`;
   const bulletTextarea = (key, label, value = product[key] || '') => `<label class="full-width bullet-editor">${label}<div class="bullet-editor-controls"><button type="button" class="ghost-btn" data-add-bullet="${key}">• Add bullet</button></div><textarea name="${key}" rows="4">${value}</textarea></label>`;
   const locationPicker = `<label>Location<details class="multi-select"><summary>${selectedLocations.length ? selectedLocations.join(', ') : 'Pilih lokasi tour'}</summary><div class="multi-select-options">${tourLocations.map(location => `<label><input type="checkbox" name="locations" value="${location}" ${selectedLocations.includes(location) ? 'checked' : ''} />${location}</label>`).join('')}</div></details></label>`;
-  return `<div class="modal-backdrop" id="productModal"><form class="booking-modal product-modal" id="productForm"><div class="modal-head"><div><span class="eyebrow">Tour Packages Database</span><h2>${product.productId && record.productId ? 'Edit package' : 'New package'}</h2><p>Maklumat package disimpan sebagai master data Milas Travel.</p></div><button type="button" class="modal-close" data-close-product>×</button></div><div class="product-form-content"><div class="send-section-title">PRODUCT INFORMATION</div><div class="editor-grid">${input('name','Name package')}${input('productId','Product ID Milas')}${input('supplierName','Supplier Name')}${input('supplierCode','Supplier code')}<label>Tour category<select name="tourCategory"><option value="">Pilih kategori tour</option>${tourCategories.map(category => `<option value="${category}" ${product.tourCategory === category ? 'selected' : ''}>${category}</option>`).join('')}</select></label>${locationPicker}<label>Date publish<input type="date" name="datePublish" value="${product.datePublish || todayIso()}" /></label><label>Status<select name="status">${productStatuses.map(status => `<option value="${status}" ${product.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></label></div><div class="send-section-title">PACKAGE OVERVIEW</div><div class="editor-grid">${textarea('overview','Package overview')}</div><div class="send-section-title">ITINERARY</div><div class="editor-grid">${itineraryEditor(product.itinerary)}</div><div class="send-section-title">WHAT'S INCLUDED / EXCLUDED</div><div class="editor-grid">${bulletTextarea('included',"What's included")}${bulletTextarea('excluded',"What's excluded")}</div><div class="send-section-title">DEPARTURE / PICK UP INFORMATION</div><div class="editor-grid">${textarea('departureInfo','Departure / pick up information')}</div><div class="send-section-title">PRICING</div><div class="editor-grid">${pricingEditor(product.pricing)}</div><div class="send-section-title">AVAILABILITY CALENDAR</div><div class="editor-grid">${textarea('availability','Availability calendar')}</div><div class="send-section-title">ADD-ONS</div><div class="editor-grid">${addonEditor(product.addons)}</div><div class="send-section-title">CANCELLATION POLICY</div><div class="editor-grid">${textarea('cancellationPolicy','Cancellation policy')}</div>${productHistorySection(product.history)}</div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-product>Cancel</button><button type="submit" class="primary-btn">Save package</button></div></form></div>`;
+  return `<div class="modal-backdrop" id="productModal"><form class="booking-modal product-modal" id="productForm"><div class="modal-head"><div><span class="eyebrow">Tour Packages Database</span><h2>${product.productId && record.productId ? 'Edit package' : 'New package'}</h2><p>Maklumat package disimpan sebagai master data Milas Travel.</p></div><button type="button" class="modal-close" data-close-product>×</button></div><div class="product-form-content"><div class="send-section-title">PRODUCT INFORMATION</div><div class="editor-grid">${input('name','Name package')}${input('productId','Product ID Milas')}${input('supplierName','Supplier Name')}${input('supplierCode','Supplier code')}<label>Tour category<select name="tourCategory"><option value="">Pilih kategori tour</option>${tourCategories.map(category => `<option value="${category}" ${product.tourCategory === category ? 'selected' : ''}>${category}</option>`).join('')}</select></label>${locationPicker}<label>Date publish<input type="date" name="datePublish" value="${product.datePublish || todayIso()}" /></label><label>Status<select name="status">${productStatuses.map(status => `<option value="${status}" ${product.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></label></div><div class="send-section-title">PACKAGE OVERVIEW</div><div class="editor-grid">${textarea('overview','Package overview')}</div><div class="send-section-title">ITINERARY</div><div class="editor-grid">${itineraryEditor(product.itinerary)}</div><div class="send-section-title">WHAT'S INCLUDED / EXCLUDED</div><div class="editor-grid">${bulletTextarea('included',"What's included")}${bulletTextarea('excluded',"What's excluded")}</div><div class="send-section-title">DEPARTURE / PICK UP INFORMATION</div><div class="editor-grid">${textarea('departureInfo','Departure / pick up information')}</div><div class="send-section-title">PRICING</div><div class="editor-grid">${pricingEditor(product.pricing)}</div><div class="send-section-title">AVAILABILITY CALENDAR</div><div class="editor-grid">${availabilityEditor(product.availability)}</div><div class="send-section-title">ADD-ONS</div><div class="editor-grid">${addonEditor(product.addons)}</div><div class="send-section-title">CANCELLATION POLICY</div><div class="editor-grid">${textarea('cancellationPolicy','Cancellation policy')}</div>${productHistorySection(product.history)}</div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-product>Cancel</button><button type="submit" class="primary-btn">Save package</button></div></form></div>`;
 }
 function tourPackagesView() {
   const products = storedTourProducts();
@@ -1098,14 +1138,17 @@ function newOrderCount() {
 function newLeadCount() {
   return storedLeads().filter(lead => /new\s*lead/i.test(String(lead.status || ''))).length;
 }
-function followUpsDueCount() {
+function dueFollowUps() {
   const today = new Date();
   today.setHours(23, 59, 59, 999);
   return storedLeads().filter(lead => {
     if (/^(done|completed|closed)$/i.test(String(lead.followUpStatus || ''))) return false;
     const dueDate = parseBookingDate(lead.followUpDate);
     return dueDate && dueDate <= today;
-  }).length;
+  });
+}
+function followUpsDueCount() {
+  return dueFollowUps().length;
 }
 function isBookingSent(bookingId) {
   try {
@@ -1196,6 +1239,23 @@ function storedTourPackages() {
 function packageDisplay(value) {
   const packageRecord = storedTourPackages().find(item => item.id === value || item.name === value);
   return packageRecord ? `${packageRecord.id} — ${packageRecord.name}` : (value || '—');
+}
+function packageAvailability(packageId) {
+  const product = storedTourProducts().find(item => item.productId === packageId || item.name === packageId);
+  return availabilityDataFromValue(product?.availability).filter(item => item.date);
+}
+function packageAvailabilityMessage(packageId, date) {
+  const schedule = packageAvailability(packageId);
+  if (!schedule.length) return '';
+  if (!date) return `${schedule.length} tarikh availability ditetapkan`;
+  const item = schedule.find(entry => entry.date === date);
+  if (!item) return 'Tarikh ini tiada dalam availability package';
+  if (item.status !== 'Available') return `Tarikh ini berstatus ${item.status}`;
+  return item.capacity === '' ? 'Tarikh tersedia' : `Tersedia · ${item.capacity} tempat`;
+}
+function bookingAvailabilityHintMarkup(packageId, date = '') {
+  const message = packageAvailabilityMessage(packageId, date);
+  return `<small class="availability-hint ${message && /tiada|status Full|status Closed/i.test(message) ? 'unavailable' : ''}" data-availability-hint>${message}</small>`;
 }
 
 function packageRates(packageId) {
@@ -1304,7 +1364,7 @@ function bookingEditor(record = {}) {
     : key === 'phone'
     ? phoneFieldMarkup('phone', label, record.phone || (record.nationality ? countryDialCodeForNationality(record.nationality) : ''))
     : key === 'package'
-    ? `<label>${label}<select name="package">${packageOptions}</select></label>`
+    ? `<label>${label}<select name="package">${packageOptions}</select>${bookingAvailabilityHintMarkup(record.package, record.startDate || record.travelDate)}</label>`
     : key === 'optionalPackage'
     ? bookingOptionalPackageFieldMarkup(record.package, record.optionalPackage)
     : key === 'addOns'
@@ -1365,12 +1425,7 @@ function bookingSummaryTableLegacy(rows) {
 }
 
 function bookingSummaryTable(rows) {
-  return bookingSummaryTableBase(rows).replace(/(<button class="open-booking" data-open-booking="([^"]+)">Open <span>→<\/span><\/button>)/g, (match, openButton, encoded) => {
-    const record = JSON.parse(decodeURIComponent(encoded));
-    if (record.status !== 'NEW ORDER') return openButton;
-    const alreadySent = isBookingSent(record.orderId) || /^already sent$/i.test(String(record.supplier || ''));
-    return openButton + ' <button class="send-booking' + (alreadySent ? ' already-sent' : '') + '" data-send-booking>' + (alreadySent ? 'Already sent' : 'Send') + '</button>';
-  });
+  return bookingSummaryTableBase(rows);
 }
 function bookingSummaryTableBase(rows) {
   const headers = ['Booking ID','Customer Name','Package','Travel date','Booking status','Sales amount','Status payment',''];
@@ -1395,7 +1450,7 @@ function allBookingsViewV4() {
 }
 
 function tourPackageStatusSection(status, products) {
-  return `<section class="package-status-section ${productStatusClass(status)}"><div class="package-status-heading"><div><h2>${status}</h2><p>${status === 'Draft' ? 'Package yang masih disediakan.' : status === 'Semak' ? 'Package yang menunggu semakan.' : status === 'Approved' ? 'Package yang telah diluluskan untuk digunakan.' : 'Package yang telah diterbitkan dan boleh digunakan.'}</p></div><span class="package-status-count">${products.length}</span></div>${products.length ? `<div class="table-wrap"><table><thead><tr><th>Product ID Milas</th><th>Package</th><th>Supplier</th><th>Date publish</th><th>Status</th><th></th></tr></thead><tbody>${products.map(product => `<tr><td class="id-cell">${product.productId}</td><td><strong>${product.name || '—'}</strong></td><td>${product.supplierName || '—'}</td><td>${formatTravelDate(product.datePublish)}</td><td><span class="status ${productStatusClass(product.status)}">${product.status}</span></td><td><button class="ghost-btn product-open" data-open-product="${encodeURIComponent(JSON.stringify(product))}">Open</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty-bookings">Tiada package dalam status ini.</div>'}</section>`;
+  return `<section class="package-status-section ${productStatusClass(status)}"><div class="package-status-heading"><div><h2>${status}</h2><p>${status === 'Draft' ? 'Package yang masih disediakan.' : status === 'Semak' ? 'Package yang menunggu semakan.' : status === 'Approved' ? 'Package yang telah diluluskan untuk digunakan.' : 'Package yang telah diterbitkan dan boleh digunakan.'}</p></div><span class="package-status-count">${products.length}</span></div>${products.length ? `<div class="table-wrap"><table><thead><tr><th>Product ID Milas</th><th>Package</th><th>Supplier</th><th>Date publish</th><th>Availability</th><th>Status</th><th></th></tr></thead><tbody>${products.map(product => { const availability = availabilityDataFromValue(product.availability); const availableCount = availability.filter(item => item.status === 'Available').length; return `<tr><td class="id-cell">${product.productId}</td><td><strong>${product.name || '—'}</strong></td><td>${product.supplierName || '—'}</td><td>${formatTravelDate(product.datePublish)}</td><td>${availability.length ? `${availableCount}/${availability.length} available` : 'Not set'}</td><td><span class="status ${productStatusClass(product.status)}">${product.status}</span></td><td><button class="ghost-btn product-open" data-open-product="${encodeURIComponent(JSON.stringify(product))}">Open</button></td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty-bookings">Tiada package dalam status ini.</div>'}</section>`;
 }
 function tourPackagesViewGrouped() {
   const products = storedTourProducts();
@@ -1616,9 +1671,9 @@ function genericView(key) {
 
 function settingsView() { return `<section class="settings-grid"><article class="panel settings-nav"><h2>Configuration</h2><button class="setting-active">General settings <span>→</span></button><button>Lead sources <span>→</span></button><button>Package categories <span>→</span></button><button>Supplier types <span>→</span></button><button>Payment methods <span>→</span></button></article><article class="panel settings-content"><div class="panel-head"><div><h2>Users, roles & permissions</h2><p>Permission architecture berpusat — bukan hardcoded di UI.</p></div><button class="primary-btn">+ Invite user</button></div><div class="role-list"><div class="role-row"><div class="avatar teal">AM</div><section><strong>Afiq Milas</strong><small>Super Admin · Last active now</small></section><span class="role-pill">Super Admin</span><button class="icon-btn">•••</button></div><div class="role-row"><div class="avatar blue">SA</div><section><strong>Sarah Ahmad</strong><small>Sales Manager · Last active 12 min ago</small></section><span class="role-pill">Sales Manager</span><button class="icon-btn">•••</button></div><div class="role-row"><div class="avatar purple">RK</div><section><strong>Rizal Karim</strong><small>Operations · Last active yesterday</small></section><span class="role-pill">Operations</span><button class="icon-btn">•••</button></div></div><div class="permission-box"><strong>Permission matrix</strong><p>Roles inherit granular permissions seperti View Lead, Create Quotation, Record Payment dan View Reports.</p><div class="permission-chips"><span>View leads</span><span>Create quotation</span><span>Create booking</span><span>Record payment</span><span>View operations</span><span>View reports</span></div></div></article></section>`; }
 
-function render() { const v=views[state.active], todayCount=upcomingTodayCount(), pendingNewOrders=newOrderCount(), pendingNewLeads=newLeadCount(), dueFollowUps=followUpsDueCount(); document.querySelector('#app').innerHTML=`<div class="app-shell"><aside class="sidebar"><div class="brand"><span class="brand-mark">M</span><span><strong>Milas Travel</strong><small>Unified CRM</small></span></div><div class="workspace-select"><span class="workspace-dot"></span><span>Milas Travel & Tours</span><b>⌄</b></div><nav>${navGroups.map(g=>`<div class="nav-group"><small>${g.label}</small>${g.items.map(([id,label,icon])=>`<button class="nav-item ${state.active===id?'active':''}" data-nav="${id}"><i>${icon}</i>${label}${id==='leads'&&pendingNewLeads?`<em class="nav-count">${pendingNewLeads}</em>`:''}${id==='followups'&&dueFollowUps?`<em class="nav-count">${dueFollowUps}</em>`:''}${id==='outstanding'?'<em>3</em>':''}${id==='bookings'&&pendingNewOrders?`<em class="nav-count">${pendingNewOrders}</em>`:''}${id==='upcoming'&&todayCount?`<em class="nav-count">${todayCount}</em>`:''}</button>`).join('')}</div>`).join('')}</nav><div class="sidebar-footer"><button class="help-link">? <span>Help centre</span></button><div class="user-chip"><div class="avatar teal">AM</div><span><strong>Afiq Milas</strong><small>Super Admin</small></span><b>•••</b></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumbs"><span>${v.eyebrow}</span><b>/</b><strong>${v.title}</strong></div><div class="top-actions"><div class="global-search">⌕ <input id="globalSearch" placeholder="Search anything..." /><kbd>⌘ K</kbd></div><button class="icon-btn notification">♧<i></i></button><button class="mobile-menu">☰</button></div></header><div class="content"><div class="page-heading"><div><h1>${v.title}</h1><p>${v.subtitle}</p></div><div class="heading-actions">${state.active==='dashboard'?`<div class="range-select"><span>◷</span><select id="range"><option ${state.range==='Today'?'selected':''}>Today</option><option ${state.range==='This Week'?'selected':''}>This Week</option><option ${state.range==='This Month'?'selected':''}>This Month</option><option ${state.range==='Custom Date'?'selected':''}>Custom Date</option></select></div>`:''}${v.action?`<button class="primary-btn" id="primaryAction">${v.action}</button>`:''}</div></div>${state.active==='dashboard'?dashboard():state.active==='salesTeam'?salesTeamView():state.active==='settings'?settingsView():genericView(state.active)}</div></main></div><div id="toast" class="toast ${state.toast?'show':''}">${state.toast}</div>`; bind(); }
+function render() { const v=views[state.active], todayCount=upcomingTodayCount(), pendingNewOrders=newOrderCount(), pendingNewLeads=newLeadCount(), dueFollowUps=followUpsDueCount(), outstandingCount=storedInvoices().filter(invoice => invoicePaymentState(invoice).balance > 0).length; document.querySelector('#app').innerHTML=`<div class="app-shell"><aside class="sidebar"><div class="brand"><span class="brand-mark">M</span><span><strong>Milas Travel</strong><small>Unified CRM</small></span></div><div class="workspace-select"><span class="workspace-dot"></span><span>Milas Travel & Tours</span><b>⌄</b></div><nav>${navGroups.map(g=>`<div class="nav-group"><small>${g.label}</small>${g.items.map(([id,label,icon])=>`<button class="nav-item ${state.active===id?'active':''}" data-nav="${id}"><i>${icon}</i>${label}${id==='leads'&&pendingNewLeads?`<em class="nav-count">${pendingNewLeads}</em>`:''}${id==='followups'&&dueFollowUps?`<em class="nav-count">${dueFollowUps}</em>`:''}${id==='outstanding'&&outstandingCount?`<em>${outstandingCount}</em>`:''}${id==='bookings'&&pendingNewOrders?`<em class="nav-count">${pendingNewOrders}</em>`:''}${id==='upcoming'&&todayCount?`<em class="nav-count">${todayCount}</em>`:''}</button>`).join('')}</div>`).join('')}</nav><div class="sidebar-footer"><button class="help-link">? <span>Help centre</span></button><div class="user-chip"><div class="avatar teal">AM</div><span><strong>Afiq Milas</strong><small>Super Admin</small></span><b>•••</b></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumbs"><span>${v.eyebrow}</span><b>/</b><strong>${v.title}</strong></div><div class="top-actions"><div class="global-search">⌕ <input id="globalSearch" placeholder="Search anything..." /><kbd>⌘ K</kbd></div><button class="icon-btn notification">♧<i></i></button><button class="mobile-menu">☰</button></div></header><div class="content"><div class="page-heading"><div><h1>${v.title}</h1><p>${v.subtitle}</p></div><div class="heading-actions">${state.active==='dashboard'?`<div class="range-select"><span>◷</span><select id="range"><option ${state.range==='Today'?'selected':''}>Today</option><option ${state.range==='This Week'?'selected':''}>This Week</option><option ${state.range==='This Month'?'selected':''}>This Month</option><option ${state.range==='Custom Date'?'selected':''}>Custom Date</option></select></div>`:''}${v.action?`<button class="primary-btn" id="primaryAction">${v.action}</button>`:''}</div></div>${state.active==='dashboard'?dashboard():state.active==='salesTeam'?salesTeamView():state.active==='settings'?settingsView():genericView(state.active)}</div></main></div><div id="toast" class="toast ${state.toast?'show':''}">${state.toast}</div>`; bind(); }
 
-function bind(){ document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{state.active=b.dataset.nav;state.toast='';render()}); document.querySelector('#primaryAction')?.addEventListener('click',()=>{state.toast='Foundation UI ready — workflow action akan disambung pada Milestone 2.';render();setTimeout(()=>{state.toast='';render()},3500)}); document.querySelector('#range')?.addEventListener('change',e=>{state.range=e.target.value;state.toast=`Dashboard ditapis: ${state.range}`;render();setTimeout(()=>{state.toast='';render()},2200)}); document.querySelector('#upcomingMonth')?.addEventListener('change',e=>{state.upcomingMonth=e.target.value;render()}); document.querySelector('#globalSearch')?.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.value){state.toast=`Carian global disediakan untuk: ${e.target.value}`;render()}}); if(state.active==='bookings' && !state.bookingSearch) document.querySelectorAll('.booking-status-group').forEach(group=>{group.classList.remove('expanded'); group.querySelector('.status-caret').textContent='›';}); }
+function bind(){ document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{state.active=b.dataset.nav;state.toast='';render()}); document.querySelector('#primaryAction')?.addEventListener('click',()=>{state.toast='Foundation UI ready — workflow action akan disambung pada Milestone 2.';render();setTimeout(()=>{state.toast='';render()},3500)}); document.querySelector('#range')?.addEventListener('change',e=>{state.range=e.target.value;state.toast=`Dashboard ditapis: ${state.range}`;render();setTimeout(()=>{state.toast='';render()},2200)}); document.querySelector('#upcomingMonth')?.addEventListener('change',e=>{state.upcomingMonth=e.target.value;render()}); document.querySelector('#salesTeamMonth')?.addEventListener('change',e=>{state.salesTeamMonth=e.target.value;render()}); document.querySelector('#globalSearch')?.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.value){state.toast=`Carian global disediakan untuk: ${e.target.value}`;render()}}); if(state.active==='bookings' && !state.bookingSearch) document.querySelectorAll('.booking-status-group').forEach(group=>{group.classList.remove('expanded'); group.querySelector('.status-caret').textContent='›';}); }
 
 document.addEventListener('click', (event) => {
   const openCustomer = event.target.closest('[data-open-customer]');
@@ -2006,7 +2061,14 @@ document.addEventListener('change', (event) => {
     const addons = form.querySelector('[data-booking-addons]');
     if (optional) optional.outerHTML = bookingOptionalPackageFieldMarkup(event.target.value);
     if (addons) addons.outerHTML = bookingAddonsFieldMarkup(event.target.value);
+    const hint = form.querySelector('[data-availability-hint]');
+    if (hint) hint.outerHTML = bookingAvailabilityHintMarkup(event.target.value, form.elements.startDate?.value || '');
     updateBookingSales(form);
+  }
+  if (event.target.matches('#bookingForm [name="startDate"]')) {
+    const form = event.target.form;
+    const hint = form.querySelector('[data-availability-hint]');
+    if (hint) hint.outerHTML = bookingAvailabilityHintMarkup(form.elements.package?.value || '', event.target.value);
   }
   if (event.target.matches('#bookingForm .booking-addon-multi input[name="addOns"]')) {
     const picker = event.target.closest('.booking-addon-multi');
@@ -2029,6 +2091,17 @@ document.addEventListener('change', (event) => {
 });
 
 document.addEventListener('click', (event) => {
+  const addAvailability = event.target.closest('[data-add-availability]');
+  if (addAvailability) {
+    const builder = document.querySelector('#availabilityBuilder');
+    builder?.insertAdjacentHTML('beforeend', availabilityRow());
+    builder?.lastElementChild?.querySelector('[data-availability-date]')?.focus();
+    return;
+  }
+  if (event.target.closest('[data-remove-availability]')) {
+    event.target.closest('[data-availability-row]')?.remove();
+    return;
+  }
   const addAddon = event.target.closest('[data-add-addon]');
   if (addAddon) {
     const builder = document.querySelector('#addonBuilder');
@@ -2224,6 +2297,14 @@ document.addEventListener('submit', (event) => {
   record.addOns = formData.getAll('addOns').map(value => { try { return JSON.parse(value); } catch { return {name: value}; } }).filter(item => item?.name);
   record.selectedAddons = record.addOns;
   record.status = String(record.status || '').trim().toUpperCase();
+  const availability = packageAvailability(record.package);
+  if (availability.length && record.startDate) {
+    const selectedDate = availability.find(item => item.date === record.startDate);
+    if (!selectedDate || selectedDate.status !== 'Available') {
+      window.alert(selectedDate ? `Tarikh ${record.startDate} tidak tersedia untuk package ini (${selectedDate.status}).` : 'Tarikh tersebut tiada dalam availability package. Sila pilih tarikh yang tersedia.');
+      return;
+    }
+  }
   if (!record.supplier) record.supplier = 'Send';
   const phoneField = getBookingFields().find(([key, label]) => /hp|phone|telefon/i.test(key + ' ' + label));
   if (phoneField && record[phoneField[0]]) record.noHp = record[phoneField[0]];
@@ -2727,8 +2808,11 @@ function syncOutstandingNavCount() {
   const count = storedInvoices().filter(invoice => invoicePaymentState(invoice).balance > 0).length;
   const badge = button.querySelector('em');
   if (!count) { badge?.remove(); return; }
-  if (badge) badge.textContent = String(count);
-  else button.insertAdjacentHTML('beforeend', `<em>${count}</em>`);
+  if (badge) {
+    if (badge.textContent !== String(count)) badge.textContent = String(count);
+  } else {
+    button.insertAdjacentHTML('beforeend', `<em>${count}</em>`);
+  }
 }
 const outstandingNavObserver = new MutationObserver(() => syncOutstandingNavCount());
 outstandingNavObserver.observe(document.body, {childList: true, subtree: true});
