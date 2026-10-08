@@ -1,4 +1,4 @@
-const sharedData = { suppliers: null, bookings: null };
+const sharedData = { suppliers: null, bookings: null, customers: null };
 
 const EMPTY_DATABASE_RESET_VERSION = '2026-09-28-empty-database-v4';
 const DATABASE_DATA_KEYS = [
@@ -21,19 +21,25 @@ function resetDatabaseIfNeeded() {
     localStorage.setItem('milas-tour-products', '[]');
     sharedData.suppliers = [];
     sharedData.bookings = [];
+    sharedData.customers = [];
     localStorage.setItem('milas-empty-database-reset', EMPTY_DATABASE_RESET_VERSION);
-    fetch('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ suppliers: [], bookings: [] }) }).catch(() => {});
+    fetch('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ suppliers: [], bookings: [], customers: [] }) }).catch(() => {});
   } catch {}
 }
 resetDatabaseIfNeeded();
 
 window.addEventListener('storage', event => {
-  if (event.key !== 'milas-bookings' || !event.newValue) return;
+  if (!['milas-bookings', 'milas-customers'].includes(event.key) || !event.newValue) return;
   try {
-    const bookings = JSON.parse(event.newValue);
-    if (!Array.isArray(bookings)) return;
-    sharedData.bookings = bookings;
-    if (state?.active === 'bookings') render();
+    const records = JSON.parse(event.newValue);
+    if (!Array.isArray(records)) return;
+    if (event.key === 'milas-bookings') {
+      sharedData.bookings = records;
+      if (state?.active === 'bookings') render();
+    } else {
+      sharedData.customers = records;
+      if (state?.active === 'customers') render();
+    }
   } catch {}
 });
 
@@ -51,18 +57,23 @@ async function loadSharedData() {
       if (!response.ok) throw new Error(`Shared state request failed: ${response.status}`);
       if (!response.headers.get('content-type')?.includes('application/json')) continue;
       const data = await response.json();
-      if (!Array.isArray(data.suppliers) && !Array.isArray(data.bookings)) throw new Error('Invalid shared state payload');
+      if (!Array.isArray(data.suppliers) && !Array.isArray(data.bookings) && !Array.isArray(data.customers)) throw new Error('Invalid shared state payload');
       if (Array.isArray(data.suppliers)) sharedData.suppliers = data.suppliers;
       if (Array.isArray(data.bookings)) sharedData.bookings = data.bookings;
+      if (Array.isArray(data.customers)) sharedData.customers = data.customers;
       try {
         if (Array.isArray(sharedData.suppliers)) localStorage.setItem('milas-suppliers', JSON.stringify(sharedData.suppliers));
         if (Array.isArray(sharedData.bookings)) localStorage.setItem('milas-bookings', JSON.stringify(sharedData.bookings));
+        if (Array.isArray(sharedData.customers)) localStorage.setItem('milas-customers', JSON.stringify(sharedData.customers));
       } catch {}
       break;
     } catch (error) {
       if (source !== '/api/state') console.warn(`Shared CRM state source unavailable: ${source}`, error);
     }
   }
+  // Backfill every existing booking into the customer database after shared data loads.
+  // This covers bookings created before automatic customer sync was enabled.
+  syncStoredBookingsToCustomers();
   render();
 }
 
@@ -112,7 +123,7 @@ function upcomingMonthOptions(selectedMonth) {
   }
   return options.join('');
 }
-const state = { active: 'dashboard', range: 'This Month', upcomingMonth: currentMonthKey(), salesTeamMonth: currentMonthKey(), bookingSearch: '', bookingFilter: 'All statuses', bookingView: 'list', bookingGroup: 'status', leadSearch: '', leadFilter: 'All statuses', toast: '' };
+const state = { active: 'dashboard', range: 'This Month', customDateFrom: '', customDateTo: '', customDateOpen: false, customDateCursor: currentMonthKey(), customDateHover: '', customDateDragging: false, upcomingMonth: currentMonthKey(), salesTeamPeriod: 'This Month', salesTeamMonth: currentMonthKey(), bookingSearch: '', bookingFilter: 'All statuses', bookingView: 'list', bookingGroup: 'status', leadSearch: '', leadFilter: 'All statuses', toast: '' };
 
 function metric(label, value, note, tone = '') {
   return `<article class="metric ${tone}"><div class="metric-label">${label}<span class="metric-dot"></span></div><div class="metric-value">${value}</div><div class="metric-note">${note}</div></article>`;
@@ -144,12 +155,18 @@ function dashboardMoney(value) {
 }
 function dashboardDateInRange(value, range) {
   const date = parseBookingDate(value);
-  if (!date) return range === 'This Month';
+  if (!date) return false;
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   if (range === 'Today') return date.toDateString() === start.toDateString();
   if (range === 'This Week') { const weekStart = new Date(start); weekStart.setDate(start.getDate() - start.getDay()); const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 7); return date >= weekStart && date < weekEnd; }
-  if (range === 'Custom Date') return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+  if (range === 'Custom Date') {
+    const from = parseBookingDate(state.customDateFrom);
+    const to = parseBookingDate(state.customDateTo || state.customDateFrom);
+    if (!from || !to) return false;
+    to.setHours(23, 59, 59, 999);
+    return date >= from && date <= to;
+  }
   return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
 }
 function quotationCreatedDate(quotation) {
@@ -167,11 +184,10 @@ function recordInMonth(value, monthKey) {
   if (!date) return monthKey === currentMonthKey();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}` === monthKey;
 }
-function customerNationalityStats() {
+function customerNationalityStats(customers = storedCustomers()) {
   const counts = new Map();
-  storedCustomers().forEach(customer => {
-    const nationality = String(customer.nationality || '').trim();
-    if (!nationality) return;
+  customers.forEach(customer => {
+    const nationality = String(customer.nationality || '').trim() || 'Belum ditetapkan';
     counts.set(nationality, (counts.get(nationality) || 0) + 1);
   });
   return [...counts.entries()].sort(([nameA, countA], [nameB, countB]) => countB - countA || nameA.localeCompare(nameB));
@@ -209,6 +225,69 @@ function dashboard() {
   const row = item => `<tr><td><strong>${item.orderId || '—'}</strong></td><td>${item.customer || '—'}</td><td>${packageDisplay(item.package || item.name)}</td><td>${formatTravelDate(item.startDate)}</td><td>${item.sales || '—'}</td><td><span class="status ${String(item.status || '').toLowerCase().replaceAll(' ','-')}">${item.status || '—'}</span></td></tr>`;
   const nationalityPanel = nationalityStats.length ? nationalityStats.map(([nationality, count]) => `<div class="nationality-row"><span>${escapeMarkup(nationality)}</span><div class="nationality-bar"><i style="width:${Math.round(count / maxNationality * 100)}%"></i></div><b>${count}</b></div>`).join('') : '<div class="empty-bookings">Tiada data nationality.</div>';
   return `<section class="dashboard-view"><div class="metrics">${metric('Total Leads',monthlyLeads,`Bulan ini · Bulan lalu: ${previousMonthLeads}`,'teal')}${metric('Quotation',monthlyQuotations,`Bulan ini · Bulan lalu: ${previousMonthQuotations}`,'blue')}${metric('Won',won,'Closed successfully','violet')}${metric('Conversion Rate',conversionRate,'New Leads → Won','green')}${metric('Sales Monthly',dashboardMoney(salesMonthly),'Invoice generated this month','violet')}${metric('Expected Sales',dashboardMoney(expectedSales),'Confirmed + ongoing + completed','blue')}${metric('Sales Complete',dashboardMoney(salesComplete),`${completedTours.length} completed tour${completedTours.length === 1 ? '' : 's'}`,'green')}${metric('Cash Collected',dashboardMoney(cashCollected),'Payments received','amber')}${metric('Outstanding',dashboardMoney(outstanding),`${invoices.filter(item => invoicePaymentState(item).balance > 0).length} invoices need follow-up`,'red')}${metric('Upcoming Trips',upcoming.length,'Next 30 days','green')}</div><div class="dashboard-grid"><div class="main-column"><article class="panel funnel-panel"><div class="panel-head"><div><h2>Sales funnel</h2><p>Data sebenar mengikut ${state.range.toLowerCase()}</p></div><button class="ghost-btn" data-nav="pipeline">View pipeline <span>→</span></button></div><div class="funnel">${[['Leads',funnel.leads,'teal'],['Quotation',funnel.quotation,'blue'],['Booking',funnel.booking,'violet'],['Confirmed',funnel.confirmed,'amber']].map(([label,value]) => `<div class="funnel-row"><span>${label}</span><div class="bar"><i style="width:${Math.round(value / maxFunnel * 100)}%"></i></div><b>${value}</b></div>`).join('')}</div></article><article class="panel"><div class="panel-head"><div><h2>Recent bookings</h2><p>Booking terbaru dalam source of truth</p></div><button class="ghost-btn" data-nav="bookings">View all <span>→</span></button></div><div class="table-wrap"><table><thead><tr><th>Booking</th><th>Customer</th><th>Package</th><th>Travel date</th><th>Value</th><th>Status</th></tr></thead><tbody>${recent.length ? recent.map(row).join('') : '<tr><td colspan="6" class="empty-cell">Tiada booking.</td></tr>'}</tbody></table></div></article></div><aside class="side-column"><article class="panel attention"><div class="panel-head"><div><h2>Needs attention</h2><p>Tindakan berdasarkan rekod semasa</p></div><span class="count-badge">${invoices.filter(item => invoicePaymentState(item).balance > 0).length + followups.length + upcomingWeek.length}</span></div><div class="attention-list"><div><span class="attention-icon red-bg">!</span><section><strong>Outstanding payment</strong><small>${invoices.filter(item => invoicePaymentState(item).balance > 0).length} invoice belum selesai</small></section><b data-nav="outstanding">→</b></div><div><span class="attention-icon amber-bg">◷</span><section><strong>Follow-ups due</strong><small>${followups.length} follow-up perlu tindakan</small></section><b data-nav="followups">→</b></div><div><span class="attention-icon blue-bg">⌂</span><section><strong>Trips this week</strong><small>${upcomingWeek.length} booking perlu persediaan</small></section><b data-nav="upcoming">→</b></div></div></article><article class="panel mini-calendar"><div class="panel-head"><div><h2>Upcoming travel</h2><p>Next 7 days</p></div></div>${upcomingWeek.length ? upcomingWeek.map(item => { const date = parseBookingDate(item.startDate); return `<div class="trip"><span class="date-box"><b>${String(date.getDate()).padStart(2,'0')}</b><small>${new Intl.DateTimeFormat('en',{month:'short'}).format(date).toUpperCase()}</small></span><section><strong>${packageDisplay(item.package || item.name)}</strong><small>${item.customer || 'Customer'} · ${item.adult || 0} travellers</small></section><span class="teal-tag">${item.status || 'Ready'}</span></div>`; }).join('') : '<div class="empty-bookings">Tiada perjalanan dalam 7 hari.</div>'}</article><article class="panel nationality-panel"><div class="panel-head"><div><h2>Customer nationality</h2><p>Jumlah customer mengikut nationality</p></div></div><div class="nationality-list">${nationalityPanel}</div></article></aside></div></section>`;
+}
+
+function dashboardRangeLabel() {
+  if (state.range !== 'Custom Date') return state.range;
+  const from = state.customDateFrom ? formatTravelDate(state.customDateFrom) : '';
+  const to = state.customDateTo ? formatTravelDate(state.customDateTo) : from;
+  return from ? `${from} — ${to}` : 'Custom Date';
+}
+
+function paymentEntriesInRange(invoices) {
+  return invoices.flatMap(invoice => {
+    const history = Array.isArray(invoice.paymentHistory)
+      ? invoice.paymentHistory
+      : (Number(invoice.paymentAmount || 0) > 0 ? [{amount: invoice.paymentAmount, paidAt: invoice.paidAt}] : []);
+    return history.filter(payment => dashboardDateInRange(payment.paidAt, state.range));
+  });
+}
+
+function dashboard() {
+  const leads = storedLeads();
+  const quotations = storedQuotations();
+  const bookings = storedBookings();
+  const invoices = storedInvoices();
+  syncStoredBookingsToCustomers();
+  const customers = storedCustomers();
+  const rangeLabel = dashboardRangeLabel();
+  const scopedLeads = leads.filter(item => dashboardDateInRange(item.receivedDate, state.range));
+  const scopedQuotations = quotations.filter(item => dashboardDateInRange(quotationCreatedDate(item), state.range));
+  const scopedBookings = bookings.filter(item => dashboardDateInRange(item.startDate, state.range));
+  const scopedInvoices = invoices.filter(item => dashboardDateInRange(item.issuedAt || item.createdAt, state.range));
+  const scopedCustomers = customers.filter(item => dashboardDateInRange(item.createdAt || item.updatedAt, state.range));
+  const activeBookings = scopedBookings.filter(item => item.status !== 'CANCEL');
+  const confirmed = activeBookings.filter(item => item.status === 'CONFIRMED');
+  const won = scopedLeads.filter(item => item.status === 'Won').length;
+  const travelSales = activeBookings.reduce((sum, item) => sum + bookingSalesValue(item), 0);
+  const invoiceSales = scopedInvoices.reduce((sum, item) => sum + Number(String(item.total || 0).replace(/[^0-9.-]/g, '') || 0), 0);
+  const payments = paymentEntriesInRange(invoices);
+  const cashCollected = payments.reduce((sum, payment) => sum + Number(String(payment.amount || 0).replace(/[^0-9.-]/g, '') || 0), 0);
+  const outstandingInvoices = scopedInvoices.filter(item => invoicePaymentState(item).balance > 0);
+  const outstanding = outstandingInvoices.reduce((sum, item) => sum + invoicePaymentState(item).balance, 0);
+  const tripsInRange = activeBookings.filter(item => !isCompletedBooking(item));
+  const followups = scopedLeads.filter(item => {
+    if (/^(done|completed|closed)$/i.test(String(item.followUpStatus || ''))) return false;
+    return dashboardDateInRange(item.followUpDate, state.range);
+  });
+  const funnel = { leads: scopedLeads.length, quotation: scopedQuotations.length, booking: activeBookings.length, confirmed: confirmed.length };
+  const maxFunnel = Math.max(1, funnel.leads, funnel.quotation, funnel.booking, funnel.confirmed);
+  const recent = [...scopedBookings].sort((a, b) => (parseBookingDate(b.bookingDate || b.startDate) || 0) - (parseBookingDate(a.bookingDate || a.startDate) || 0)).slice(0, 5);
+  const trips = [...tripsInRange].sort((a, b) => (parseBookingDate(a.startDate) || 0) - (parseBookingDate(b.startDate) || 0)).slice(0, 3);
+  const conversionRate = scopedLeads.length ? `${((won / scopedLeads.length) * 100).toFixed(1)}%` : '0.0%';
+  const nationalityStats = customerNationalityStats(customers);
+  const maxNationality = Math.max(1, ...nationalityStats.map(([, count]) => count));
+  const row = item => `<tr><td><strong>${item.orderId || '—'}</strong></td><td>${item.customer || '—'}</td><td>${packageDisplay(item.package || item.name)}</td><td>${formatTravelDate(item.startDate)}</td><td>${bookingSalesDisplay(item)}</td><td><span class="status ${String(item.status || '').toLowerCase().replaceAll(' ','-')}">${item.status || '—'}</span></td></tr>`;
+  const chartYear = new Date().getFullYear();
+  const monthlySales = Array.from({length: 12}, (_, month) => ({month, total: 0}));
+  bookings.filter(item => String(item.status || '').trim().toUpperCase() !== 'CANCEL').forEach(item => {
+    const date = parseBookingDate(item.startDate);
+    if (date && date.getFullYear() === chartYear) monthlySales[date.getMonth()].total += bookingSalesValue(item);
+  });
+  const maxMonthlySales = Math.max(1, ...monthlySales.map(item => item.total));
+  const monthlySalesPanel = `<div class="monthly-sales-chart"><div class="monthly-sales-head"><div><h3>Sales by Month</h3><p>Jualan mengikut travel date · ${chartYear}</p></div></div><div class="monthly-sales-bars">${monthlySales.map(item => `<div class="monthly-sales-bar"><div class="monthly-sales-bar-value" style="height:${item.total ? Math.max(8, Math.round(item.total / maxMonthlySales * 100)) : 3}%" title="${dashboardMoney(item.total)}"></div><strong>${item.total ? dashboardMoney(item.total).replace('RM ', 'RM ') : '—'}</strong><span>${new Intl.DateTimeFormat('en',{month:'short'}).format(new Date(chartYear, item.month, 1))}</span></div>`).join('')}</div></div>`;
+  const nationalityPanel = (nationalityStats.length ? nationalityStats.map(([nationality, count]) => `<div class="nationality-row"><span>${escapeMarkup(nationality)}</span><div class="nationality-bar"><i style="width:${Math.round(count / maxNationality * 100)}%"></i></div><b>${count}</b></div>`).join('') : '<div class="empty-bookings">Tiada data nationality.</div>') + monthlySalesPanel;
+  return `<section class="dashboard-view"><div class="metrics">${metric('Total Leads',scopedLeads.length,rangeLabel,'teal')}${metric('Quotation',scopedQuotations.length,rangeLabel,'blue')}${metric('Won',won,'Closed successfully dalam julat ini','violet')}${metric('Conversion Rate',conversionRate,'New Leads → Won','green')}${metric('Invoice Sales',dashboardMoney(invoiceSales),'Invoice dijana dalam julat ini','violet')}${metric('Trips',activeBookings.length,'Travel date dalam julat ini','green')}${metric('Jualan Travel',dashboardMoney(travelSales),`Travel date dalam ${rangeLabel}`,'blue')}${metric('Cash Collected',dashboardMoney(cashCollected),'Bayaran diterima dalam julat ini','amber')}${metric('Outstanding',dashboardMoney(outstanding),`${outstandingInvoices.length} invoice dalam julat ini belum selesai`,'red')}</div><div class="dashboard-grid"><div class="main-column"><article class="panel funnel-panel"><div class="panel-head"><div><h2>Sales funnel</h2><p>Data sebenar: ${rangeLabel}</p></div><button class="ghost-btn" data-nav="pipeline">View pipeline <span>→</span></button></div><div class="funnel">${[['Leads',funnel.leads,'teal'],['Quotation',funnel.quotation,'blue'],['Booking',funnel.booking,'violet'],['Confirmed',funnel.confirmed,'amber']].map(([label,value]) => `<div class="funnel-row"><span>${label}</span><div class="bar"><i style="width:${Math.round(value / maxFunnel * 100)}%"></i></div><b>${value}</b></div>`).join('')}</div></article><article class="panel"><div class="panel-head"><div><h2>Bookings dalam julat dipilih</h2><p>Disusun mengikut tarikh booking terkini.</p></div><button class="ghost-btn" data-nav="bookings">View all <span>→</span></button></div><div class="table-wrap"><table><thead><tr><th>Booking</th><th>Customer</th><th>Package</th><th>Travel date</th><th>Value</th><th>Status</th></tr></thead><tbody>${recent.length ? recent.map(row).join('') : '<tr><td colspan="6" class="empty-cell">Tiada booking dalam julat ini.</td></tr>'}</tbody></table></div></article></div><aside class="side-column"><article class="panel attention"><div class="panel-head"><div><h2>Needs attention</h2><p>Rekod dalam julat: ${rangeLabel}</p></div><span class="count-badge">${outstandingInvoices.length + followups.length + trips.length}</span></div><div class="attention-list"><div><span class="attention-icon red-bg">!</span><section><strong>Outstanding payment</strong><small>${outstandingInvoices.length} invoice belum selesai</small></section><b data-nav="outstanding">→</b></div><div><span class="attention-icon amber-bg">◷</span><section><strong>Follow-ups</strong><small>${followups.length} follow-up dalam julat ini</small></section><b data-nav="followups">→</b></div><div><span class="attention-icon blue-bg">⌂</span><section><strong>Trips</strong><small>${tripsInRange.length} travel date dalam julat ini</small></section><b data-nav="upcoming">→</b></div></div></article><article class="panel mini-calendar"><div class="panel-head"><div><h2>Travel dalam julat</h2><p>${rangeLabel}</p></div></div>${trips.length ? trips.map(item => { const date = parseBookingDate(item.startDate); return `<div class="trip"><span class="date-box"><b>${String(date.getDate()).padStart(2,'0')}</b><small>${new Intl.DateTimeFormat('en',{month:'short'}).format(date).toUpperCase()}</small></span><section><strong>${packageDisplay(item.package || item.name)}</strong><small>${item.customer || 'Customer'} · ${item.adult || 0} travellers</small></section><span class="teal-tag">${item.status || 'Ready'}</span></div>`; }).join('') : '<div class="empty-bookings">Tiada travel dalam julat ini.</div>'}</article><article class="panel nationality-panel"><div class="panel-head"><div><h2>Customer nationality</h2><p>Semua customer</p></div></div><div class="nationality-list">${nationalityPanel}</div></article></aside></div></section>`;
 }
 
 function salesTeamMembers() {
@@ -280,6 +359,49 @@ function salesTeamView() {
     return `<article class="team-roster-card"><div class="team-card-top"><span class="team-roster-avatar">${staffInitials(staff.name)}</span>${badge}</div><div class="team-card-profile"><h3>${escapeMarkup(staff.name)}</h3><p>Sales Representative</p></div><div class="team-card-stats"><div class="team-stat-main"><span>Active orders:</span><strong>${staff.activeOrders} ${staff.activeOrders === 1 ? 'Order' : 'Orders'}</strong></div><div class="team-stat-split"><span>Leads: <b>${staff.leads}</b></span><span>Closing deals: <b>${staff.closedDeals}</b></span></div><div class="team-card-conversion"><span>Conversion</span><b>${staff.conversion.toFixed(1)}%</b></div><div class="team-total-closing"><span>Total closing berjaya:</span><strong>${dashboardMoney(staff.closedValue)}</strong></div></div></article>`;
   }).join('');
   return `<section class="sales-team-view"><article class="panel team-roster-panel"><div class="team-roster-head"><div><h2>Sales Representatives Roster</h2><p>Prestasi bulan ${escapeMarkup(monthLabel(selectedMonth))} berdasarkan lead, quotation, booking dan invoice.</p></div><select id="salesTeamMonth" class="team-period" aria-label="Pilih bulan roster">${upcomingMonthOptions(selectedMonth)}</select></div><div class="team-roster-grid">${cards || '<div class="empty-bookings">Tiada staff berdaftar.</div>'}</div></article></section>`;
+}
+
+function monthKeyFromOffset(offset = 0) {
+  const date = new Date();
+  date.setDate(1);
+  date.setMonth(date.getMonth() + offset);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function selectedSalesTeamMonth() {
+  if (state.salesTeamPeriod === 'Last Month') return monthKeyFromOffset(-1);
+  if (state.salesTeamPeriod === 'Any Month & Year') return state.salesTeamMonth || currentMonthKey();
+  return currentMonthKey();
+}
+
+function salesTeamPerformance() {
+  const monthKey = selectedSalesTeamMonth();
+  const leads = storedLeads().filter(item => recordInMonth(item.receivedDate, monthKey));
+  const quotations = storedQuotations().filter(item => recordInMonth(quotationCreatedDate(item), monthKey));
+  const bookings = storedBookings().filter(item => recordInMonth(item.startDate, monthKey));
+  const invoices = storedInvoices().filter(item => recordInMonth(item.issuedAt || item.createdAt, monthKey));
+  return salesTeamMembers().map(name => {
+    const staffLeads = leads.filter(item => isAssignedTo(item, name));
+    const staffQuotations = quotations.filter(item => isAssignedTo(item, name));
+    const staffBookings = bookings.filter(item => isAssignedTo(item, name));
+    const staffInvoices = invoices.filter(item => isAssignedTo(item, name));
+    const activeOrders = staffBookings.filter(item => ['NEW ORDER', 'CONFIRMED', 'ON GOING'].includes(String(item.status || '').trim().toUpperCase()));
+    const paidInvoices = staffInvoices.filter(item => invoicePaymentState(item).paid > 0);
+    const closedDeals = paidInvoices.length;
+    const closedValue = paidInvoices.reduce((sum, item) => sum + invoicePaymentState(item).total, 0);
+    return { name, leads: staffLeads.length, quotations: staffQuotations.length, activeOrders: activeOrders.length, closedDeals, closedValue, conversion: staffLeads.length ? (closedDeals / staffLeads.length) * 100 : 0 };
+  }).sort((a, b) => b.closedValue - a.closedValue || b.closedDeals - a.closedDeals || a.name.localeCompare(b.name));
+}
+
+function salesTeamView() {
+  const performance = salesTeamPerformance();
+  const selectedMonth = selectedSalesTeamMonth();
+  const cards = performance.map((staff, index) => {
+    const activity = staff.leads + staff.quotations + staff.activeOrders + staff.closedDeals + staff.closedValue;
+    const badge = index === 0 && activity > 0 ? '<span class="team-performance-badge top">♙ Top Performer</span>' : activity > 0 ? '<span class="team-performance-badge">On Track</span>' : '<span class="team-performance-badge inactive">No Activity</span>';
+    return `<article class="team-roster-card"><div class="team-card-top"><span class="team-roster-avatar">${staffInitials(staff.name)}</span>${badge}</div><div class="team-card-profile"><h3>${escapeMarkup(staff.name)}</h3><p>Sales Representative</p></div><div class="team-card-stats"><div class="team-stat-main"><span>Active orders:</span><strong>${staff.activeOrders} ${staff.activeOrders === 1 ? 'Order' : 'Orders'}</strong></div><div class="team-stat-split"><span>Leads: <b>${staff.leads}</b></span><span>Closing deals: <b>${staff.closedDeals}</b></span></div><div class="team-card-conversion"><span>Conversion</span><b>${staff.conversion.toFixed(1)}%</b></div><div class="team-total-closing"><span>Total closing berjaya:</span><strong>${dashboardMoney(staff.closedValue)}</strong></div></div></article>`;
+  }).join('');
+  return `<section class="sales-team-view"><article class="panel team-roster-panel"><div class="team-roster-head"><div><h2>Sales Representatives Roster</h2><p>Prestasi untuk ${escapeMarkup(monthLabel(selectedMonth))} berdasarkan lead, quotation, booking dan invoice.</p></div><div class="team-period-controls"><select id="salesTeamPeriod" class="team-period" aria-label="Pilih tempoh roster"><option ${state.salesTeamPeriod === 'This Month' ? 'selected' : ''}>This Month</option><option ${state.salesTeamPeriod === 'Last Month' ? 'selected' : ''}>Last Month</option><option ${state.salesTeamPeriod === 'Any Month & Year' ? 'selected' : ''}>Any Month & Year</option></select>${state.salesTeamPeriod === 'Any Month & Year' ? `<input id="salesTeamMonth" class="team-month-input" type="month" value="${selectedMonth}" aria-label="Pilih bulan dan tahun" />` : ''}</div></div><div class="team-roster-grid">${cards || '<div class="empty-bookings">Tiada staff berdaftar.</div>'}</div></article></section>`;
 }
 
 function localDateKey(offset = 0) {
@@ -916,11 +1038,19 @@ function pipelineView() {
 
 function calendarView() { return `<article class="panel calendar-panel"><div class="calendar-head"><button class="ghost-btn">←</button><strong>September 2026</strong><button class="ghost-btn">→</button></div><div class="calendar-week">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=>`<span>${d}</span>`).join('')}</div><div class="calendar-days">${Array.from({length:30},(_,i)=>`<button class="day ${[18,20,22,24,30].includes(i+1)?'has-trip':''}"><b>${i+1}</b>${[18,20,22,24,30].includes(i+1)?'<small>trip</small>':''}</button>`).join('')}</div></article>`; }
 
+function bookingNeedsCompletion(record) {
+  const travelDate = parseBookingDate(record.startDate);
+  if (!travelDate) return false;
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const status = String(record.status || '').trim().toUpperCase();
+  return travelDate < todayStart && !['COMPLETE', 'CANCEL'].includes(status);
+}
 function upcomingView() {
   const selectedMonth = state.upcomingMonth || currentMonthKey();
   const [selectedYear, selectedMonthNumber] = selectedMonth.split('-').map(Number);
   const bookings = sortOngoingBookings(storedBookings().filter(record => { const date = parseBookingDate(record.startDate); return date && date.getFullYear() === selectedYear && date.getMonth() + 1 === selectedMonthNumber; }));
-  return `<article class="panel upcoming-list"><div class="panel-head"><div><h2>Upcoming travel schedule</h2><p>Semua tempahan untuk bulan yang dipilih, disusun mengikut tarikh travel.</p></div><div class="upcoming-controls"><label for="upcomingMonth">Bulan</label><select id="upcomingMonth" class="upcoming-month-select">${upcomingMonthOptions(selectedMonth)}</select></div></div>${bookings.length ? bookings.map(record => { const date = parseBookingDate(record.startDate), formattedDate = formatTravelDate(record.startDate), packageName = packageDisplay(record.package || record.name), statusClass = record.status === 'ON GOING' ? 'amber-tag' : record.status === 'CONFIRMED' ? 'blue-tag' : 'teal-tag'; return `<div class="trip" data-upcoming-booking="${encodeURIComponent(JSON.stringify(record))}"><span class="date-box"><b>${String(date.getDate()).padStart(2, '0')}</b><small>${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}</small></span><section>${record.customer ? '<strong>' + record.customer + '</strong>' : ''}<strong>${packageName}</strong><small>${formattedDate} · Booking ID: ${record.orderId || '—'}</small></section><span class="${statusClass}">${record.status}</span></div>`; }).join('') : '<div class="empty-bookings">Tiada tempahan untuk bulan ini.</div>'}</article>`;
+  return `<article class="panel upcoming-list"><div class="panel-head"><div><h2>Upcoming travel schedule</h2><p>Semua tempahan untuk bulan yang dipilih, disusun mengikut tarikh travel.</p></div><div class="upcoming-controls"><label for="upcomingMonth">Bulan</label><select id="upcomingMonth" class="upcoming-month-select">${upcomingMonthOptions(selectedMonth)}</select></div></div>${bookings.length ? bookings.map(record => { const date = parseBookingDate(record.startDate), formattedDate = formatTravelDate(record.startDate), packageName = packageDisplay(record.package || record.name), needsCompletion = bookingNeedsCompletion(record), action = needsCompletion ? `<button type="button" class="completion-action" data-open-booking="${encodeURIComponent(JSON.stringify(record))}">Semak status</button>` : ''; return `<div class="trip ${needsCompletion ? 'past-travel' : ''}"><span class="date-box"><b>${String(date.getDate()).padStart(2, '0')}</b><small>${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}</small></span><section>${record.customer ? '<strong>' + record.customer + '</strong>' : ''}<strong>${packageName}</strong><small>${formattedDate} · Booking ID: ${record.orderId || '—'}</small></section><div class="upcoming-status">${action}</div></div>`; }).join('') : '<div class="empty-bookings">Tiada tempahan untuk bulan ini.</div>'}</article>`;
 }
 
 function reportsView() { return `<section class="report-grid"><article class="panel report-card"><span>Sales this month</span><strong>RM 84,620</strong><div class="report-bars"><i style="height:40%"></i><i style="height:58%"></i><i style="height:48%"></i><i style="height:76%"></i><i style="height:62%"></i><i style="height:90%"></i></div><small>Jan — Jun 2026</small></article><article class="panel report-card"><span>Lead conversion rate</span><strong>14.5%</strong><div class="progress-line"><i style="width:64%"></i></div><small>+3.2% vs previous month</small></article><article class="panel report-card"><span>Cash collection</span><strong>RM 52,400</strong><div class="progress-line amber-line"><i style="width:62%"></i></div><small>62% of confirmed booking value</small></article></section>`; }
@@ -964,7 +1094,7 @@ function parseBookingDate(value) {
   const relativeMatch = /^(\d+)\s+days?\s+ago$/.exec(normalized);
   if (relativeMatch) return new Date(now.getFullYear(), now.getMonth(), now.getDate() - Number(relativeMatch[1]));
   let year, month, day;
-  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized);
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})(?:t[\d:.+-]+z?)?$/.exec(normalized);
   if (isoMatch) [, year, month, day] = isoMatch;
   const slashMatch = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(normalized);
   if (!isoMatch && slashMatch) {
@@ -999,12 +1129,39 @@ function formatTravelDate(value) {
     const monthMap = { jan:1, feb:2, mac:3, mar:3, apr:4, mei:5, may:5, jun:6, jul:7, ogs:8, aug:8, sep:9, sept:9, okt:10, oct:10, nov:11, dis:12, dec:12 };
     return `${textMatch[1].padStart(2, '0')}/${String(monthMap[textMatch[2].toLowerCase()]).padStart(2, '0')}/${textMatch[3]}`;
   }
-  return value || '—';
+  // A travel-date column must never fall back to lifecycle text such as
+  // "Completed" or "Cancelled". Those values belong in Booking status.
+  // Show an empty date marker until a valid travel date is recorded instead.
+  return '—';
 }
 function dateInputValue(value) {
-  const date = parseBookingDate(value);
+  const date = value instanceof Date ? value : parseBookingDate(value);
   if (!date) return '';
   return [date.getFullYear(), date.getMonth() + 1, date.getDate()].map((part, index) => index === 0 ? String(part) : String(part).padStart(2, '0')).join('-');
+}
+function customDatePicker() {
+  const from = dateInputValue(state.customDateFrom);
+  const to = dateInputValue(state.customDateTo);
+  const cursorDate = parseBookingDate(`${state.customDateCursor}-01`) || new Date();
+  const year = cursorDate.getFullYear();
+  const month = cursorDate.getMonth();
+  const firstDay = (new Date(year, month, 1).getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let index = 0; index < 42; index += 1) {
+    const dayNumber = index - firstDay + 1;
+    const date = new Date(year, month, dayNumber);
+    const value = dateInputValue(date);
+    const inMonth = dayNumber > 0 && dayNumber <= daysInMonth;
+    const rangeEnd = to || state.customDateHover;
+    const isInRange = from && rangeEnd && value >= from && value <= rangeEnd;
+    cells.push(`<button type="button" class="custom-date-day ${inMonth ? '' : 'outside'} ${value === from ? 'start' : ''} ${value === to ? 'end' : ''} ${isInRange ? 'in-range' : ''}" data-custom-date="${value}" aria-label="${value}">${date.getDate()}</button>`);
+  }
+  const label = new Intl.DateTimeFormat('en-US', {month: 'long', year: 'numeric'}).format(new Date(year, month, 1));
+  const startLabel = from ? formatTravelDate(from) : 'Start date';
+  const endLabel = to ? formatTravelDate(to) : 'End date';
+  const rangeLabel = from && to ? `${startLabel} — ${endLabel}` : from ? `${startLabel} — End date` : 'Select date range';
+  return `<div class="custom-date-picker" id="customDatePicker"><button type="button" id="customDateToggle" class="custom-date-trigger" aria-expanded="${state.customDateOpen}"><span class="custom-date-trigger-icon">◷</span><strong class="custom-date-trigger-value">${rangeLabel}</strong><span class="custom-date-trigger-caret">⌄</span></button>${state.customDateOpen ? `<div class="custom-date-popover" id="customDatePopover"><div class="custom-date-summary"><span><small>Start</small><strong>${startLabel}</strong></span><i></i><span><small>End</small><strong>${endLabel}</strong></span></div><div class="custom-date-head"><button type="button" data-custom-month="prev" aria-label="Bulan sebelumnya">‹</button><strong>${label}</strong><button type="button" data-custom-month="next" aria-label="Bulan seterusnya">›</button></div><div class="custom-date-weekdays"><span>Is</span><span>Se</span><span>Ra</span><span>Kh</span><span>Ju</span><span>Sa</span><span>Ah</span></div><div class="custom-date-grid">${cells.join('')}</div><div class="custom-date-footer"><button type="button" data-custom-clear>Clear</button><span>Drag to select range</span></div></div>` : ''}</div>`;
 }
 function syncBookingStatuses(records) {
   const today = new Date();
@@ -1560,8 +1717,8 @@ function customerFromRecord(record, existing = {}) {
   return {
     ...existing,
     fullName: record.customer || record.name || existing.fullName || '',
-    phone: record.phone || record.contactPhone || record.whatsapp || existing.phone || '',
-    whatsapp: record.whatsapp || record.phone || record.contactPhone || existing.whatsapp || '',
+    phone: record.phone || record.noHp || record.contactPhone || record.whatsapp || existing.phone || '',
+    whatsapp: record.whatsapp || record.phone || record.noHp || record.contactPhone || existing.whatsapp || '',
     email: record.email || existing.email || '',
     nationality: record.nationality || existing.nationality || '',
   };
@@ -1582,12 +1739,15 @@ function syncRecordToCustomer(record, sourceField, sourceId) {
   } else {
     customers.unshift({...customer, id: nextCustomerId(customers), createdAt: now});
   }
-  localStorage.setItem('milas-customers', JSON.stringify(customers));
+  persistSharedCollection('customers', customers);
 }
 function syncBookingToCustomer(booking) {
-  syncRecordToCustomer(booking, 'sourceBookingId', booking.orderId);
+  const customerName = String(booking.customer || booking.fullName || booking.name || '').trim();
+  if (!customerName) return;
+  syncRecordToCustomer({...booking, customer: customerName}, 'sourceBookingId', booking.orderId);
 }
 function storedCustomers() {
+  if (Array.isArray(sharedData.customers)) return sharedData.customers;
   try {
     const saved = JSON.parse(localStorage.getItem('milas-customers') || 'null');
     if (Array.isArray(saved)) return saved;
@@ -1627,7 +1787,7 @@ function customerEditor(record = {}) {
   const localPhone = storedPhone.replace(/[^0-9]/g, '').replace(new RegExp('^' + storedCode.replace('+', '')), '');
   const phoneField = `<label>Phone number<div class="phone-input-group"><select name="phoneCountryCode" aria-label="Country calling code">${Object.entries(countryDialCodes).map(([, dial]) => `<option value="${dial}" ${dial === storedCode ? 'selected' : ''}>${escapeMarkup(dial)}</option>`).join('')}</select><input name="phone" type="tel" value="${escapeMarkup(localPhone)}" placeholder="12-345 6789" pattern="[0-9][0-9\\s().-]{5,17}" title="Masukkan nombor telefon tanpa kod negara" required /></div></label>`;
   const input = ([key, label, type, required]) => key === 'nationality' ? `<label>${label}<select name="${key}">${countryOptions(customer[key] || '')}</select></label>` : key === 'phone' ? phoneField : key === 'emergencyPhone' ? phoneFieldMarkup('emergencyPhone', label, customer.emergencyPhone) : `<label>${label}<input name="${key}" type="${type}" value="${escapeMarkup(customer[key] || '')}" ${required ? 'required' : ''} /></label>`;
-  return `<div class="modal-backdrop" id="customerModal"><form class="booking-modal customer-modal" id="customerForm"><div class="modal-head"><div><span class="eyebrow">CRM / Customers</span><h2>${record.id ? 'Edit customer' : 'New customer'}</h2><p>Simpan profil lengkap customer untuk kegunaan quotation, invoice dan booking.</p></div><button type="button" class="modal-close" data-close-customer>×</button></div><div class="customer-form-content"><div class="send-section-title">CUSTOMER PROFILE</div><div class="editor-grid"><label>Customer ID<input name="id" value="${escapeMarkup(customer.id)}" readonly /></label>${customerFields.slice(0, 6).map(input).join('')}</div><div class="send-section-title">IDENTITY & CONTACT DETAILS</div><div class="editor-grid">${customerFields.slice(6).map(input).join('')}</div><label class="full-width">Notes<textarea name="notes" rows="4">${escapeMarkup(customer.notes || '')}</textarea></label></div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-customer>Cancel</button><button type="submit" class="primary-btn">Save customer</button></div></form></div>`;
+  return `<div class="modal-backdrop" id="customerModal"><form class="booking-modal customer-modal" id="customerForm"><div class="modal-head"><div><span class="eyebrow">CRM / Customers</span><h2>${record.id ? 'Edit customer' : 'New customer'}</h2><p>Simpan profil lengkap customer untuk kegunaan quotation, invoice dan booking.</p></div><button type="button" class="modal-close" data-close-customer>×</button></div><div class="customer-form-content"><div class="send-section-title customer-section-title">CUSTOMER PROFILE</div><div class="editor-grid customer-editor-grid"><label>Customer ID<input name="id" value="${escapeMarkup(customer.id)}" readonly /></label>${customerFields.slice(0, 6).map(input).join('')}</div><div class="send-section-title customer-section-title">IDENTITY & CONTACT DETAILS</div><div class="editor-grid customer-editor-grid">${customerFields.slice(6).map(input).join('')}</div><label class="full-width customer-notes-field">Notes<textarea name="notes" rows="4">${escapeMarkup(customer.notes || '')}</textarea></label></div><div class="modal-actions"><button type="button" class="ghost-btn" data-close-customer>Cancel</button><button type="submit" class="primary-btn">Save customer</button></div></form></div>`;
 }
 function handleCustomerSubmit(event) {
   event.preventDefault();
@@ -1643,7 +1803,7 @@ function handleCustomerSubmit(event) {
   const customer = {...previous, ...data, updatedAt: new Date().toISOString()};
   if (!customer.createdAt) customer.createdAt = customer.updatedAt;
   if (index >= 0) customers[index] = customer; else customers.unshift(customer);
-  localStorage.setItem('milas-customers', JSON.stringify(customers));
+  persistSharedCollection('customers', customers);
   document.querySelector('#customerModal')?.remove();
   state.active = 'customers';
   state.toast = 'Customer berjaya disimpan.';
@@ -1671,9 +1831,9 @@ function genericView(key) {
 
 function settingsView() { return `<section class="settings-grid"><article class="panel settings-nav"><h2>Configuration</h2><button class="setting-active">General settings <span>→</span></button><button>Lead sources <span>→</span></button><button>Package categories <span>→</span></button><button>Supplier types <span>→</span></button><button>Payment methods <span>→</span></button></article><article class="panel settings-content"><div class="panel-head"><div><h2>Users, roles & permissions</h2><p>Permission architecture berpusat — bukan hardcoded di UI.</p></div><button class="primary-btn">+ Invite user</button></div><div class="role-list"><div class="role-row"><div class="avatar teal">AM</div><section><strong>Afiq Milas</strong><small>Super Admin · Last active now</small></section><span class="role-pill">Super Admin</span><button class="icon-btn">•••</button></div><div class="role-row"><div class="avatar blue">SA</div><section><strong>Sarah Ahmad</strong><small>Sales Manager · Last active 12 min ago</small></section><span class="role-pill">Sales Manager</span><button class="icon-btn">•••</button></div><div class="role-row"><div class="avatar purple">RK</div><section><strong>Rizal Karim</strong><small>Operations · Last active yesterday</small></section><span class="role-pill">Operations</span><button class="icon-btn">•••</button></div></div><div class="permission-box"><strong>Permission matrix</strong><p>Roles inherit granular permissions seperti View Lead, Create Quotation, Record Payment dan View Reports.</p><div class="permission-chips"><span>View leads</span><span>Create quotation</span><span>Create booking</span><span>Record payment</span><span>View operations</span><span>View reports</span></div></div></article></section>`; }
 
-function render() { const v=views[state.active], todayCount=upcomingTodayCount(), pendingNewOrders=newOrderCount(), pendingNewLeads=newLeadCount(), dueFollowUps=followUpsDueCount(), outstandingCount=storedInvoices().filter(invoice => invoicePaymentState(invoice).balance > 0).length; document.querySelector('#app').innerHTML=`<div class="app-shell"><aside class="sidebar"><div class="brand"><span class="brand-mark">M</span><span><strong>Milas Travel</strong><small>Unified CRM</small></span></div><div class="workspace-select"><span class="workspace-dot"></span><span>Milas Travel & Tours</span><b>⌄</b></div><nav>${navGroups.map(g=>`<div class="nav-group"><small>${g.label}</small>${g.items.map(([id,label,icon])=>`<button class="nav-item ${state.active===id?'active':''}" data-nav="${id}"><i>${icon}</i>${label}${id==='leads'&&pendingNewLeads?`<em class="nav-count">${pendingNewLeads}</em>`:''}${id==='followups'&&dueFollowUps?`<em class="nav-count">${dueFollowUps}</em>`:''}${id==='outstanding'&&outstandingCount?`<em>${outstandingCount}</em>`:''}${id==='bookings'&&pendingNewOrders?`<em class="nav-count">${pendingNewOrders}</em>`:''}${id==='upcoming'&&todayCount?`<em class="nav-count">${todayCount}</em>`:''}</button>`).join('')}</div>`).join('')}</nav><div class="sidebar-footer"><button class="help-link">? <span>Help centre</span></button><div class="user-chip"><div class="avatar teal">AM</div><span><strong>Afiq Milas</strong><small>Super Admin</small></span><b>•••</b></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumbs"><span>${v.eyebrow}</span><b>/</b><strong>${v.title}</strong></div><div class="top-actions"><div class="global-search">⌕ <input id="globalSearch" placeholder="Search anything..." /><kbd>⌘ K</kbd></div><button class="icon-btn notification">♧<i></i></button><button class="mobile-menu">☰</button></div></header><div class="content"><div class="page-heading"><div><h1>${v.title}</h1><p>${v.subtitle}</p></div><div class="heading-actions">${state.active==='dashboard'?`<div class="range-select"><span>◷</span><select id="range"><option ${state.range==='Today'?'selected':''}>Today</option><option ${state.range==='This Week'?'selected':''}>This Week</option><option ${state.range==='This Month'?'selected':''}>This Month</option><option ${state.range==='Custom Date'?'selected':''}>Custom Date</option></select></div>`:''}${v.action?`<button class="primary-btn" id="primaryAction">${v.action}</button>`:''}</div></div>${state.active==='dashboard'?dashboard():state.active==='salesTeam'?salesTeamView():state.active==='settings'?settingsView():genericView(state.active)}</div></main></div><div id="toast" class="toast ${state.toast?'show':''}">${state.toast}</div>`; bind(); }
+function render() { const v=views[state.active], todayCount=upcomingTodayCount(), pendingNewOrders=newOrderCount(), pendingNewLeads=newLeadCount(), dueFollowUps=followUpsDueCount(), outstandingCount=storedInvoices().filter(invoice => invoicePaymentState(invoice).balance > 0).length; document.querySelector('#app').innerHTML=`<div class="app-shell"><aside class="sidebar"><div class="brand"><span class="brand-mark">M</span><span><strong>Milas Travel</strong><small>Unified CRM</small></span></div><div class="workspace-select"><span class="workspace-dot"></span><span>Milas Travel & Tours</span><b>⌄</b></div><nav>${navGroups.map(g=>`<div class="nav-group"><small>${g.label}</small>${g.items.map(([id,label,icon])=>`<button class="nav-item ${state.active===id?'active':''}" data-nav="${id}"><i>${icon}</i>${label}${id==='leads'&&pendingNewLeads?`<em class="nav-count">${pendingNewLeads}</em>`:''}${id==='followups'&&dueFollowUps?`<em class="nav-count">${dueFollowUps}</em>`:''}${id==='outstanding'&&outstandingCount?`<em>${outstandingCount}</em>`:''}${id==='bookings'&&pendingNewOrders?`<em class="nav-count">${pendingNewOrders}</em>`:''}${id==='upcoming'&&todayCount?`<em class="nav-count">${todayCount}</em>`:''}</button>`).join('')}</div>`).join('')}</nav><div class="sidebar-footer"><button class="help-link">? <span>Help centre</span></button><div class="user-chip"><div class="avatar teal">AM</div><span><strong>Afiq Milas</strong><small>Super Admin</small></span><b>•••</b></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumbs"><span>${v.eyebrow}</span><b>/</b><strong>${v.title}</strong></div><div class="top-actions"><div class="global-search">⌕ <input id="globalSearch" placeholder="Search anything..." /><kbd>⌘ K</kbd></div><button class="icon-btn notification">♧<i></i></button><button class="mobile-menu">☰</button></div></header><div class="content"><div class="page-heading"><div><h1>${v.title}</h1><p>${v.subtitle}</p></div><div class="heading-actions">${state.active==='dashboard'?`<div class="range-select"><span>◷</span><select id="range"><option ${state.range==='Today'?'selected':''}>Today</option><option ${state.range==='This Week'?'selected':''}>This Week</option><option ${state.range==='This Month'?'selected':''}>This Month</option><option ${state.range==='Custom Date'?'selected':''}>Custom Date</option></select>${state.range==='Custom Date'?`<input id="customDateFrom" type="date" value="${state.customDateFrom || ''}" aria-label="Tarikh mula" /><input id="customDateTo" type="date" min="${state.customDateFrom || ''}" value="${state.customDateTo || ''}" aria-label="Tarikh akhir" />`:''}</div>`:''}${v.action?`<button class="primary-btn" id="primaryAction">${v.action}</button>`:''}</div></div>${state.active==='dashboard'?dashboard():state.active==='salesTeam'?salesTeamView():state.active==='settings'?settingsView():genericView(state.active)}</div></main></div><div id="toast" class="toast ${state.toast?'show':''}">${state.toast}</div>`; bind(); }
 
-function bind(){ document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{state.active=b.dataset.nav;state.toast='';render()}); document.querySelector('#primaryAction')?.addEventListener('click',()=>{state.toast='Foundation UI ready — workflow action akan disambung pada Milestone 2.';render();setTimeout(()=>{state.toast='';render()},3500)}); document.querySelector('#range')?.addEventListener('change',e=>{state.range=e.target.value;state.toast=`Dashboard ditapis: ${state.range}`;render();setTimeout(()=>{state.toast='';render()},2200)}); document.querySelector('#upcomingMonth')?.addEventListener('change',e=>{state.upcomingMonth=e.target.value;render()}); document.querySelector('#salesTeamMonth')?.addEventListener('change',e=>{state.salesTeamMonth=e.target.value;render()}); document.querySelector('#globalSearch')?.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.value){state.toast=`Carian global disediakan untuk: ${e.target.value}`;render()}}); if(state.active==='bookings' && !state.bookingSearch) document.querySelectorAll('.booking-status-group').forEach(group=>{group.classList.remove('expanded'); group.querySelector('.status-caret').textContent='›';}); }
+function bind(){ document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{state.active=b.dataset.nav;state.toast='';render()}); document.querySelector('#primaryAction')?.addEventListener('click',()=>{state.toast='Foundation UI ready — workflow action akan disambung pada Milestone 2.';render();setTimeout(()=>{state.toast='';render()},3500)}); document.querySelector('#range')?.addEventListener('change',e=>{state.range=e.target.value;state.toast=`Dashboard ditapis: ${state.range}`;render();setTimeout(()=>{state.toast='';render()},2200)}); document.querySelector('#customDateFrom')?.addEventListener('change',e=>{state.customDateFrom=e.target.value;const endInput=document.querySelector('#customDateTo');if(!endInput)return;endInput.min=state.customDateFrom;if(state.customDateTo&&state.customDateTo<state.customDateFrom){state.customDateTo='';endInput.value=''}endInput.focus();try{endInput.showPicker?.()}catch{}}); document.querySelector('#customDateTo')?.addEventListener('change',e=>{state.customDateTo=e.target.value;render()}); document.querySelector('#upcomingMonth')?.addEventListener('change',e=>{state.upcomingMonth=e.target.value;render()}); document.querySelector('#salesTeamMonth')?.addEventListener('change',e=>{state.salesTeamMonth=e.target.value;render()}); document.querySelector('#globalSearch')?.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.value){state.toast=`Carian global disediakan untuk: ${e.target.value}`;render()}}); if(state.active==='bookings' && !state.bookingSearch) document.querySelectorAll('.booking-status-group').forEach(group=>{group.classList.remove('expanded'); group.querySelector('.status-caret').textContent='›';}); }
 
 document.addEventListener('click', (event) => {
   const openCustomer = event.target.closest('[data-open-customer]');
@@ -1702,6 +1862,17 @@ document.addEventListener('submit', (event) => {
 }, true);
 importSupplierFromQuery();
 loadSharedData();
+
+function separateMonthlySalesChart() {
+  const dashboard = document.querySelector('.dashboard-view');
+  const chart = dashboard?.querySelector('.monthly-sales-chart');
+  const grid = dashboard?.querySelector('.dashboard-grid');
+  if (!dashboard || !chart || !grid || chart.parentElement === dashboard) return;
+  dashboard.appendChild(chart);
+  chart.classList.add('monthly-sales-panel');
+}
+const dashboardLayoutObserver = new MutationObserver(separateMonthlySalesChart);
+dashboardLayoutObserver.observe(document.querySelector('#app'), {childList: true, subtree: true});
 
 function quotationPdfFile({data, packageName, total}) {
   const product = storedTourProducts().find(item => item.productId === data.packageId || item.name === packageName || (packageName && String(packageName).includes(item.name))) || {};
@@ -2817,3 +2988,116 @@ function syncOutstandingNavCount() {
 const outstandingNavObserver = new MutationObserver(() => syncOutstandingNavCount());
 outstandingNavObserver.observe(document.body, {childList: true, subtree: true});
 syncOutstandingNavCount();
+
+function installCustomDatePicker() {
+  const fromInput = document.querySelector('#customDateFrom');
+  const toInput = document.querySelector('#customDateTo');
+  const rangeSelect = fromInput?.parentElement;
+  if (!rangeSelect || document.querySelector('#customDatePicker')) return;
+  fromInput.remove();
+  toInput?.remove();
+  if (!state.customDateFrom && !state.customDateTo) state.customDateOpen = true;
+  rangeSelect.insertAdjacentHTML('beforeend', customDatePicker());
+}
+
+function updateCustomDatePreview() {
+  const from = dateInputValue(state.customDateFrom);
+  const end = dateInputValue(state.customDateTo || state.customDateHover);
+  document.querySelectorAll('[data-custom-date]').forEach(day => {
+    const value = day.dataset.customDate;
+    day.classList.toggle('start', value === from);
+    day.classList.toggle('end', value === dateInputValue(state.customDateTo));
+    day.classList.toggle('in-range', Boolean(from && end && value >= from && value <= end));
+  });
+}
+
+const customDateObserver = new MutationObserver(installCustomDatePicker);
+customDateObserver.observe(document.body, {childList: true, subtree: true});
+installCustomDatePicker();
+
+document.addEventListener('pointerdown', event => {
+  const day = event.target.closest('[data-custom-date]');
+  if (!day || !state.customDateOpen) return;
+  event.preventDefault();
+  state.customDateSuppressClick = true;
+  const value = day.dataset.customDate;
+  if (!state.customDateFrom || state.customDateTo) {
+    state.customDateFrom = value;
+    state.customDateTo = '';
+  }
+  state.customDateHover = value;
+  state.customDateDragging = true;
+  updateCustomDatePreview();
+}, true);
+
+document.addEventListener('pointerover', event => {
+  if (!state.customDateDragging) return;
+  const day = event.target.closest('[data-custom-date]');
+  if (!day) return;
+  state.customDateHover = day.dataset.customDate;
+  updateCustomDatePreview();
+}, true);
+
+document.addEventListener('pointerup', () => {
+  if (!state.customDateDragging) return;
+  const end = state.customDateHover || state.customDateFrom;
+  if (end === state.customDateFrom) {
+    state.customDateDragging = false;
+    state.customDateHover = '';
+    state.customDateOpen = true;
+    render();
+    return;
+  }
+  if (end < state.customDateFrom) [state.customDateFrom, state.customDateTo] = [end, state.customDateFrom];
+  else state.customDateTo = end;
+  state.customDateDragging = false;
+  state.customDateHover = '';
+  state.customDateOpen = false;
+  render();
+}, true);
+
+document.addEventListener('click', event => {
+  const toggle = event.target.closest('#customDateToggle');
+  const monthButton = event.target.closest('[data-custom-month]');
+  const clearButton = event.target.closest('[data-custom-clear]');
+  const day = event.target.closest('[data-custom-date]');
+  if (toggle) {
+    state.customDateOpen = !state.customDateOpen;
+    render();
+    return;
+  }
+  if (monthButton) {
+    const cursor = parseBookingDate(`${state.customDateCursor}-01`) || new Date();
+    cursor.setMonth(cursor.getMonth() + (monthButton.dataset.customMonth === 'next' ? 1 : -1));
+    state.customDateCursor = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+    render();
+    return;
+  }
+  if (clearButton) {
+    state.customDateFrom = '';
+    state.customDateTo = '';
+    state.customDateHover = '';
+    state.customDateOpen = true;
+    render();
+    return;
+  }
+  if (day && event.detail === 0) {
+    if (!state.customDateFrom || state.customDateTo) {
+      state.customDateFrom = day.dataset.customDate;
+      state.customDateTo = '';
+      state.customDateOpen = true;
+    } else {
+      state.customDateTo = day.dataset.customDate;
+      if (state.customDateTo < state.customDateFrom) [state.customDateFrom, state.customDateTo] = [state.customDateTo, state.customDateFrom];
+      state.customDateOpen = false;
+    }
+    render();
+  }
+}, true);
+
+document.addEventListener('change', event => {
+  if (event.target.id === 'salesTeamPeriod') {
+    state.salesTeamPeriod = event.target.value;
+    render();
+  }
+}, true);
